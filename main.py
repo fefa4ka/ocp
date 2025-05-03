@@ -1,4 +1,5 @@
 import logging
+import time # Add time import
 from typing import Any, AsyncGenerator, Dict, List
 from urllib.parse import urlparse
 
@@ -299,6 +300,96 @@ async def chat_completions(request: Request):
     except Exception as e:
         logger.exception(f"Unexpected error in chat_completions endpoint: {e}") # Log full traceback
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- Helper Functions ---
+def transform_anthropic_response_to_openai(anthropic_data: Dict[str, Any], requested_model_id: str) -> Dict[str, Any]:
+    """
+    Transforms a non-streaming Anthropic API response (/v1/messages) into the
+    OpenAI Chat Completion format.
+    """
+    logger.debug(f"Attempting to transform Anthropic response for model {requested_model_id}")
+    try:
+        # The actual response payload seems nested under 'response' key based on logs
+        anthropic_response = anthropic_data.get("response", {})
+        if not anthropic_response:
+            logger.error("Anthropic response data is missing the 'response' field.")
+            # Return a generic error structure or raise? Let's return error structure.
+            return {
+                "error": {
+                    "message": "Invalid response format received from Anthropic backend (missing 'response' field).",
+                    "type": "proxy_error",
+                    "code": "invalid_backend_response"
+                }
+            }
+
+        anthropic_id = anthropic_response.get("id", f"anthropic-id-{int(time.time())}")
+        # anthropic_model = anthropic_response.get("model", requested_model_id) # Use actual model if available, else requested
+        anthropic_usage = anthropic_response.get("usage", {})
+        anthropic_content = anthropic_response.get("content", [])
+        anthropic_role = anthropic_response.get("role", "assistant")
+        anthropic_stop_reason = anthropic_response.get("stop_reason")
+
+        # --- Map Content ---
+        # Assuming the first content block is the primary text response
+        message_content = ""
+        if anthropic_content and isinstance(anthropic_content, list) and len(anthropic_content) > 0:
+            first_content_block = anthropic_content[0]
+            if first_content_block.get("type") == "text":
+                message_content = first_content_block.get("text", "")
+
+        # --- Map Finish Reason ---
+        finish_reason_map = {
+            "end_turn": "stop",
+            "max_tokens": "length",
+            "stop_sequence": "stop",
+            # Add other mappings if needed: tool_use?
+        }
+        finish_reason = finish_reason_map.get(anthropic_stop_reason, anthropic_stop_reason) # Default to original if no map
+
+        # --- Map Usage ---
+        prompt_tokens = anthropic_usage.get("input_tokens", 0)
+        completion_tokens = anthropic_usage.get("output_tokens", 0)
+        total_tokens = prompt_tokens + completion_tokens
+
+        # --- Construct OpenAI Response ---
+        openai_response = {
+            "id": f"chatcmpl-{anthropic_id}", # Prefix Anthropic ID
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": requested_model_id, # Use the model ID requested by the client, per OpenAI spec
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": anthropic_role,
+                        "content": message_content,
+                    },
+                    "finish_reason": finish_reason,
+                    "logprobs": None, # Anthropic doesn't provide logprobs in this basic response
+                }
+            ],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+            },
+            "system_fingerprint": None, # Anthropic doesn't provide this
+            # Include other fields if they can be mapped
+        }
+        logger.debug(f"Successfully transformed Anthropic response to OpenAI format.")
+        return openai_response
+
+    except Exception as e:
+        logger.exception(f"Error transforming Anthropic response: {e}. Original data: {anthropic_data}")
+        # Return a generic error structure
+        return {
+            "error": {
+                "message": f"Error transforming response from Anthropic backend: {e}",
+                "type": "proxy_error",
+                "code": "transformation_error"
+            }
+        }
 
 
 if __name__ == "__main__":
