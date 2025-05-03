@@ -1,12 +1,16 @@
 import logging
-from typing import List
+from typing import List, Any, Dict
+from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from config import settings
-from models import OpenAIModel, OpenAIModelList, SourceModel, SourceModelList
+from models import (
+    OpenAIModel, OpenAIModelList, SourceModel, SourceModelList,
+    OpenAIChatCompletionRequest # Added import
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -118,10 +122,111 @@ async def health_check():
     """Basic health check endpoint."""
     return {"status": "ok"}
 
-# Placeholder for the chat completions endpoint
-# @app.post("/v1/chat/completions")
-# async def chat_completions():
-#     pass
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request):
+    """
+    Proxies chat completion requests to the backend defined by the model's handle,
+    using the same host as the MODEL_LIST_URL and the same OAuth token.
+    """
+    try:
+        request_data = await request.json()
+        # Optional: Validate request body structure against OpenAIChatCompletionRequest
+        # try:
+        #     OpenAIChatCompletionRequest.model_validate(request_data)
+        # except Exception as e:
+        #     logger.warning(f"Request body validation failed: {e}")
+        #     raise HTTPException(status_code=400, detail=f"Invalid request body: {e}")
+
+        model_id = request_data.get("model")
+        if not model_id:
+            raise HTTPException(status_code=400, detail="Missing 'model' field in request body")
+
+        logger.info(f"Received chat completion request for model: {model_id}")
+
+        # Find the model in the cached map
+        target_model = model_map.get(model_id)
+        if not target_model:
+            logger.warning(f"Model '{model_id}' not found in cache. Available: {list(model_map.keys())}")
+            # Optionally, refresh cache and retry?
+            raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found.")
+
+        handle = target_model.handle
+        logger.info(f"Found model '{model_id}' with handle: {handle}")
+
+        # --- Determine the target backend URL ---
+        try:
+            parsed_list_url = urlparse(settings.MODEL_LIST_URL)
+            if not parsed_list_url.scheme or not parsed_list_url.netloc:
+                raise ValueError("MODEL_LIST_URL is invalid or missing scheme/host")
+
+            # Construct target URL using the scheme and host from MODEL_LIST_URL and the handle
+            target_url = f"{parsed_list_url.scheme}://{parsed_list_url.netloc}{handle}"
+            logger.info(f"Constructed target URL: {target_url}")
+
+        except ValueError as e:
+             logger.error(f"Could not parse MODEL_LIST_URL ('{settings.MODEL_LIST_URL}'): {e}")
+             raise HTTPException(status_code=500, detail="Server configuration error: Invalid MODEL_LIST_URL.")
+
+
+        # --- Prepare Headers ---
+        headers_to_forward = {
+            "Content-Type": "application/json",
+            # Pass through other relevant headers if needed, be careful about sensitive ones
+            # "Accept": request.headers.get("Accept", "application/json"),
+        }
+
+        # Add Authorization header using the same token as for the model list
+        if settings.MODEL_LIST_AUTH_TOKEN:
+            headers_to_forward["Authorization"] = f"OAuth {settings.MODEL_LIST_AUTH_TOKEN}"
+            logger.debug("Using configured MODEL_LIST_AUTH_TOKEN for backend request.")
+        else:
+            # If no token is configured, should we proceed? Depends on backend requirements.
+            # For this specific case (same host/auth), lack of token might imply an issue.
+            logger.warning(f"No MODEL_LIST_AUTH_TOKEN configured. Request to {target_url} will be unauthenticated.")
+            # raise HTTPException(status_code=500, detail="Server configuration error: Missing auth token for backend.")
+
+
+        # --- Forward the request ---
+        logger.info(f"Forwarding request for model '{model_id}' to {target_url}")
+        async with httpx.AsyncClient() as client:
+            try:
+                backend_response = await client.post(
+                    target_url,
+                    json=request_data, # Forward the original request body
+                    headers=headers_to_forward,
+                    timeout=180.0 # Set a reasonable timeout for LLM requests
+                )
+
+                # Raise exception for 4xx/5xx responses from the backend
+                backend_response.raise_for_status()
+
+                # Return the raw JSON response from the backend
+                # Assumes the backend provides an OpenAI-compatible response.
+                # If not, transformation logic would be needed here.
+                response_data = backend_response.json()
+                logger.info(f"Successfully received response from backend for model '{model_id}'")
+                # Return backend's status code and content directly
+                return JSONResponse(content=response_data, status_code=backend_response.status_code)
+
+            except httpx.RequestError as e:
+                logger.error(f"Error requesting backend {target_url}: {e}")
+                raise HTTPException(status_code=503, detail=f"Error contacting backend service: {e}")
+            except httpx.HTTPStatusError as e:
+                 # Backend returned an error status code (4xx or 5xx)
+                 logger.error(f"Backend service at {target_url} returned error {e.response.status_code}: {e.response.text}")
+                 # Forward the backend's error response (content and status code) to the client
+                 try:
+                     error_content = e.response.json()
+                 except Exception:
+                     error_content = {"detail": e.response.text} # Fallback if response is not JSON
+                 return JSONResponse(content=error_content, status_code=e.response.status_code)
+
+    except HTTPException:
+         raise # Re-raise FastAPI HTTP exceptions
+    except Exception as e:
+        logger.exception(f"Unexpected error in chat_completions endpoint: {e}") # Log full traceback
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 if __name__ == "__main__":

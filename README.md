@@ -106,7 +106,14 @@ Returns a list of models available through the proxy, conforming to the OpenAI A
 
 ### `POST /v1/chat/completions`
 
-Accepts standard OpenAI chat completion requests and proxies them to the appropriate backend based on the `model` field in the request body.
+Accepts standard OpenAI chat completion requests. It looks up the requested `model` in the list fetched from `MODEL_LIST_URL`, finds its associated `handle`, and proxies the request to the backend service.
+
+**Proxy Behavior:**
+*   The target backend URL is constructed using the **scheme and host** from the `MODEL_LIST_URL` combined with the `handle` specified for the model in the source list.
+    *   Example: If `MODEL_LIST_URL` is `https://api.example.com/models` and the handle for model `GigaChat-2-Max` is `/gigachat/api/v1/chat/completions`, the request will be proxied to `https://api.example.com/gigachat/api/v1/chat/completions`.
+*   The request to the backend uses the **same `Authorization: OAuth <token>` header** as used for fetching the model list, if `MODEL_LIST_AUTH_TOKEN` is configured. If the token is not configured, the request is sent without an `Authorization` header.
+*   The request body sent by the client is forwarded directly to the backend.
+*   The response body and status code from the backend are returned directly to the client.
 
 **Example Request:**
 
@@ -123,7 +130,13 @@ Accepts standard OpenAI chat completion requests and proxies them to the appropr
 }
 ```
 
-The proxy will identify the `handle` for this model (`/fireworks/chat/completions`) and forward the request accordingly. The response will be formatted like a standard OpenAI chat completion response.
+Assuming `MODEL_LIST_URL` is `https://api.example.com/models` and `MODEL_LIST_AUTH_TOKEN` is set, the proxy will:
+1. Find the model `accounts/fireworks/models/llama-v3p1-405b-instruct`.
+2. Get its handle (e.g., `/fireworks/chat/completions`).
+3. Send a POST request to `https://api.example.com/fireworks/chat/completions`.
+4. Include the `Authorization: OAuth <token>` header.
+5. Forward the JSON body above.
+6. Return the response received from `https://api.example.com/...` to the client.
 
 ## Example Source Model List Format
 
@@ -183,8 +196,10 @@ The proxy expects the model list fetched from `MODEL_LIST_URL` to be a JSON obje
 
 *   Authentication handling (passing API keys to backends).
 *   Request/Response transformation for non-compatible backends.
-*   Load balancing or routing strategies.
-*   Caching of model list.
+*   Authentication handling (passing API keys to backends, currently only supports forwarding the MODEL_LIST_AUTH_TOKEN).
+*   Request/Response transformation for non-compatible backends (currently assumes backend is OpenAI compatible).
+*   More sophisticated routing strategies (e.g., based on model family AND handle, allowing different base URLs for different providers even if served from the same model list endpoint).
+*   Load balancing.
 *   Support for other OpenAI endpoints (e.g., Embeddings).
 *   Detailed logging and monitoring.
-*   Periodic refresh of the model list.
+*   Periodic refresh of the model list (currently only fetches on startup).
