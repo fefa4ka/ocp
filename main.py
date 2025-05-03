@@ -390,6 +390,9 @@ async def chat_completions(request: Request):
         # Now, handle the request based on streaming flag
         try:
             if is_streaming:
+                # Log the data being passed to the generator for Gemini
+                if "/gemini/" in handle.lower():
+                    logger.debug(f"Passing transformed data to stream_generator for Gemini: {request_data}")
                 # Create the generator instance, passing the required arguments
                 generator = stream_generator(target_url, request_data, headers_to_forward, handle, model_id)
                 # Return a StreamingResponse using the generator
