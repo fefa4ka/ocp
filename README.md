@@ -29,19 +29,43 @@ This allows users to interact with various underlying LLM providers (like OpenAI
 
 ## Configuration
 
-The proxy requires configuration, primarily the URL from which to fetch the model list. This might be set via environment variables or a configuration file.
+The proxy requires configuration, primarily the URL from which to fetch the model list. This can be set via an environment variable `MODEL_LIST_URL` or by creating a `.env` file in the project root.
 
-*   `MODEL_LIST_URL`: The URL to fetch the JSON list of models.
+*   **`MODEL_LIST_URL`**: The URL to fetch the JSON list of models (e.g., `http://example.com/api/models.json`). Defaults to `http://localhost:8001/models.json` if not set.
 
-## Usage
+## Setup and Running
 
-_(Instructions on how to build and run the proxy server will go here once implemented. e.g., using Docker, Python Flask/FastAPI, Node.js Express, etc.)_
+1.  **Create a virtual environment (optional but recommended):**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+    ```
 
-```bash
-# Example: How to run the server (replace with actual command)
-export MODEL_LIST_URL="<your_model_list_source_url>"
-python proxy_server.py
-```
+2.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+3.  **Configure the Model List URL:**
+    *   **Option A: Environment Variable:**
+        ```bash
+        export MODEL_LIST_URL="<your_actual_model_list_source_url>"
+        ```
+    *   **Option B: `.env` file:** Create a file named `.env` in the project root with the following content:
+        ```dotenv
+        MODEL_LIST_URL=<your_actual_model_list_source_url>
+        ```
+
+4.  **Run the server:**
+    ```bash
+    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ```
+    *   `--reload` enables auto-reloading during development. Remove it for production.
+
+5.  **Access the API:**
+    *   Models list: `http://localhost:8000/v1/models`
+    *   API Docs (Swagger UI): `http://localhost:8000/docs`
+    *   Health Check: `http://localhost:8000/health`
 
 ## API Endpoints
 
@@ -138,3 +162,4 @@ The proxy expects the model list fetched from `MODEL_LIST_URL` to be a JSON arra
 *   Caching of model list.
 *   Support for other OpenAI endpoints (e.g., Embeddings).
 *   Detailed logging and monitoring.
+*   Periodic refresh of the model list.
