@@ -15,7 +15,8 @@ from models import (
     SourceModelList,
 )
 
-logging.basicConfig(level=logging.INFO)
+# Set logging level to DEBUG to see the new log message
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -134,6 +135,7 @@ async def chat_completions(request: Request):
     """
     try:
         request_data = await request.json()
+        logger.debug(f"Received raw request data for chat completion: {request_data}") # Log the received data
         # Optional: Validate request body structure against OpenAIChatCompletionRequest
         # try:
         #     OpenAIChatCompletionRequest.model_validate(request_data)
