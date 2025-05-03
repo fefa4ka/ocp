@@ -192,6 +192,16 @@ async def chat_completions(request: Request):
             # raise HTTPException(status_code=500, detail="Server configuration error: Missing auth token for backend.")
 
 
+        # --- API Specific Adjustments (Example for Anthropic) ---
+        # Modify request_data if needed based on the target backend
+        if "/anthropic/" in handle.lower():
+            if "max_tokens" not in request_data or request_data.get("max_tokens") is None:
+                default_max_tokens = 4096 # Set a reasonable default for Anthropic
+                logger.warning(f"Anthropic request for model '{model_id}' missing 'max_tokens'. Applying default: {default_max_tokens}")
+                request_data["max_tokens"] = default_max_tokens
+            # Add other Anthropic-specific transformations here if needed
+            # e.g., mapping OpenAI 'messages' to Anthropic 'messages' + 'system' prompt
+
         # --- Forward the request ---
         is_streaming = request_data.get("stream", False)
         logger.info(f"Forwarding request for model '{model_id}' to {target_url}. Streaming: {is_streaming}")
