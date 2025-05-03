@@ -277,10 +277,45 @@ async def chat_completions(request: Request):
                         # Check for backend errors *before* streaming body
                         if backend_response.status_code >= 400:
                             error_body = await backend_response.aread()
-                            error_detail = error_body.decode() or f"Backend error {backend_response.status_code}"
+                            try:
+                                # Try to parse as JSON
+                                error_json = json.loads(error_body.decode())
+                        
+                                # Check if it's already in OpenAI format
+                                if "error" in error_json and isinstance(error_json["error"], dict):
+                                    error_detail = error_json
+                                else:
+                                    # Convert to OpenAI format
+                                    error_message = error_json.get("detail", error_json.get("message", str(error_json)))
+                                    if isinstance(error_message, dict):
+                                        error_message = json.dumps(error_message)
+                                
+                                    error_detail = {
+                                        "error": {
+                                            "message": error_message,
+                                            "type": "server_error" if backend_response.status_code >= 500 else "invalid_request_error",
+                                            "param": None,
+                                            "code": "service_unavailable" if backend_response.status_code >= 500 else "bad_request"
+                                        }
+                                    }
+                            except (json.JSONDecodeError, UnicodeDecodeError):
+                                # Not JSON, use text
+                                error_text = error_body.decode(errors='replace') or f"Backend error {backend_response.status_code}"
+                                error_detail = {
+                                    "error": {
+                                        "message": error_text,
+                                        "type": "server_error" if backend_response.status_code >= 500 else "invalid_request_error",
+                                        "param": None,
+                                        "code": "service_unavailable" if backend_response.status_code >= 500 else "bad_request"
+                                    }
+                                }
+                    
                             logger.error(f"Backend streaming request failed with status {backend_response.status_code}: {error_detail}")
-                            # Yield an OpenAI-like error chunk before raising? Or just raise? Let's just raise.
-                            raise HTTPException(status_code=backend_response.status_code, detail=error_detail)
+                    
+                            # Yield the error in OpenAI format and then [DONE]
+                            yield f"data: {json.dumps(error_detail)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return  # Stop the generator
 
                         logger.info(f"Starting stream processing for model '{requested_model}'. Anthropic transformation: {is_anthropic}")
 
@@ -379,16 +414,17 @@ async def chat_completions(request: Request):
                 except Exception as e:
                     # Log errors occurring during the streaming process itself
                     logger.exception(f"Error during backend stream processing for model {requested_model}: {e}")
-                    # Yielding an error message might be better for the client than just stopping.
+                    # Format error in OpenAI-compatible format
                     error_payload = {
                         "error": {
-                            "message": f"Proxy error during streaming: {e}",
-                            "type": "proxy_error",
-                            "code": "stream_processing_error"
+                            "message": str(e),
+                            "type": "server_error",
+                            "param": None,
+                            "code": "service_unavailable"
                         }
                     }
                     yield f"data: {json.dumps(error_payload)}\n\n"
-                    yield "data: [DONE]\n\n" # Still send DONE after error? OpenAI spec implies yes.
+                    yield "data: [DONE]\n\n" # Send DONE after error per OpenAI spec
 
 
         # Now, handle the request based on the is_streaming flag determined earlier
@@ -428,16 +464,34 @@ async def chat_completions(request: Request):
                         final_response_data = transform_anthropic_response_to_openai(response_data, model_id)
                         # Check if transformation resulted in an error structure
                         if "error" in final_response_data:
-                             # Use a client error status code if transformation failed badly
-                             # Or maybe 502 Bad Gateway if backend response was unusable? Let's use 500 for now.
-                             logger.error(f"Anthropic transformation failed, returning error response: {final_response_data}") # Adjusted log message slightly
-                             return JSONResponse(content=final_response_data, status_code=500)
+                             # Format as OpenAI-compatible error
+                             error_message = final_response_data.get("error", {}).get("message", "Transformation error")
+                             logger.error(f"Anthropic transformation failed: {error_message}")
+                             error_response = {
+                                 "error": {
+                                     "message": error_message,
+                                     "type": "server_error",
+                                     "param": None,
+                                     "code": "internal_error"
+                                 }
+                             }
+                             return JSONResponse(content=error_response, status_code=500)
                     elif "/gemini/" in handle.lower():
                         logger.info(f"Transforming Gemini response for model '{model_id}' to OpenAI format.")
                         final_response_data = transform_gemini_response_to_openai(response_data, model_id)
                         if "error" in final_response_data:
-                             logger.error(f"Gemini transformation failed, returning error response: {final_response_data}")
-                             return JSONResponse(content=final_response_data, status_code=500)
+                             # Format as OpenAI-compatible error
+                             error_message = final_response_data.get("error", {}).get("message", "Transformation error")
+                             logger.error(f"Gemini transformation failed: {error_message}")
+                             error_response = {
+                                 "error": {
+                                     "message": error_message,
+                                     "type": "server_error",
+                                     "param": None,
+                                     "code": "internal_error"
+                                 }
+                             }
+                             return JSONResponse(content=error_response, status_code=500)
 
 
                     # Return potentially transformed data with original success status code
@@ -445,20 +499,76 @@ async def chat_completions(request: Request):
 
         except httpx.RequestError as e:
             logger.error(f"Error requesting backend {target_url}: {e}")
-            raise HTTPException(status_code=503, detail=f"Error contacting backend service: {e}")
+            # Format as OpenAI-compatible error
+            error_response = {
+                "error": {
+                    "message": f"Error contacting backend service: {e}",
+                    "type": "server_error",
+                    "param": None,
+                    "code": "service_unavailable"
+                }
+            }
+            return JSONResponse(content=error_response, status_code=503)
         except httpx.HTTPStatusError as e: # Caught for non-streaming errors
              logger.error(f"Backend service at {target_url} returned error {e.response.status_code}: {e.response.text}")
              try:
+                 # Try to parse backend error response
                  error_content = e.response.json()
+                 
+                 # Check if it's already in OpenAI format
+                 if "error" in error_content and isinstance(error_content["error"], dict):
+                     # Already in OpenAI format, pass through
+                     return JSONResponse(content=error_content, status_code=e.response.status_code)
+                 else:
+                     # Convert to OpenAI format
+                     error_message = error_content.get("detail", error_content.get("message", str(error_content)))
+                     if isinstance(error_message, dict):
+                         error_message = json.dumps(error_message)
+                     
+                     error_response = {
+                         "error": {
+                             "message": error_message,
+                             "type": "server_error" if e.response.status_code >= 500 else "invalid_request_error",
+                             "param": None,
+                             "code": "service_unavailable" if e.response.status_code >= 500 else "bad_request"
+                         }
+                     }
+                     return JSONResponse(content=error_response, status_code=e.response.status_code)
              except Exception:
-                 error_content = {"detail": e.response.text} # Fallback if response is not JSON
-             return JSONResponse(content=error_content, status_code=e.response.status_code)
+                 # Fallback if response is not JSON
+                 error_response = {
+                     "error": {
+                         "message": e.response.text or f"Backend error {e.response.status_code}",
+                         "type": "server_error" if e.response.status_code >= 500 else "invalid_request_error",
+                         "param": None,
+                         "code": "service_unavailable" if e.response.status_code >= 500 else "bad_request"
+                     }
+                 }
+                 return JSONResponse(content=error_response, status_code=e.response.status_code)
 
-    except HTTPException:
-         raise # Re-raise FastAPI HTTP exceptions (including those from stream_generator)
+    except HTTPException as e:
+         # Convert FastAPI HTTPException to OpenAI-compatible error format
+         logger.error(f"HTTP exception in chat_completions: {e.detail} (status: {e.status_code})")
+         error_response = {
+             "error": {
+                 "message": str(e.detail),
+                 "type": "server_error" if e.status_code >= 500 else "invalid_request_error",
+                 "param": None,
+                 "code": "service_unavailable" if e.status_code >= 500 else "bad_request"
+             }
+         }
+         return JSONResponse(content=error_response, status_code=e.status_code)
     except Exception as e:
         logger.exception(f"Unexpected error in chat_completions endpoint: {e}") # Log full traceback
-        raise HTTPException(status_code=500, detail="Internal server error")
+        error_response = {
+            "error": {
+                "message": "An unexpected error occurred",
+                "type": "server_error",
+                "param": None,
+                "code": "internal_error"
+            }
+        }
+        return JSONResponse(content=error_response, status_code=500)
 
 
 # --- Helper Functions ---
@@ -477,8 +587,9 @@ def transform_anthropic_response_to_openai(anthropic_data: Dict[str, Any], reque
             return {
                 "error": {
                     "message": "Invalid response format received from Anthropic backend (missing 'response' field).",
-                    "type": "proxy_error",
-                    "code": "invalid_backend_response"
+                    "type": "server_error",
+                    "param": None,
+                    "code": "invalid_response_error"
                 }
             }
 
@@ -545,8 +656,9 @@ def transform_anthropic_response_to_openai(anthropic_data: Dict[str, Any], reque
         return {
             "error": {
                 "message": f"Error transforming response from Anthropic backend: {e}",
-                "type": "proxy_error",
-                "code": "transformation_error"
+                "type": "server_error",
+                "param": None,
+                "code": "internal_error"
             }
         }
 
@@ -752,7 +864,9 @@ def transform_gemini_response_to_openai(gemini_data: Dict[str, Any], requested_m
             return {
                 "error": {
                     "message": "Invalid response format received from Gemini backend (missing 'candidates').",
-                    "type": "proxy_error", "code": "invalid_backend_response"
+                    "type": "server_error",
+                    "param": None,
+                    "code": "invalid_response_error"
                 }
             }
 
@@ -813,7 +927,9 @@ def transform_gemini_response_to_openai(gemini_data: Dict[str, Any], requested_m
         return {
             "error": {
                 "message": f"Error transforming response from Gemini backend: {e}",
-                "type": "proxy_error", "code": "transformation_error"
+                "type": "server_error",
+                "param": None,
+                "code": "internal_error"
             }
         }
 
