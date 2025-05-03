@@ -423,8 +423,15 @@ async def chat_completions(request: Request):
                         if "error" in final_response_data:
                              # Use a client error status code if transformation failed badly
                              # Or maybe 502 Bad Gateway if backend response was unusable? Let's use 500 for now.
-                             logger.error(f"Transformation failed, returning error response: {final_response_data}")
+                             logger.error(f"Anthropic transformation failed, returning error response: {final_response_data}") # Adjusted log message slightly
                              return JSONResponse(content=final_response_data, status_code=500)
+                    elif "/gemini/" in handle.lower():
+                        logger.info(f"Transforming Gemini response for model '{model_id}' to OpenAI format.")
+                        final_response_data = transform_gemini_response_to_openai(response_data, model_id)
+                        if "error" in final_response_data:
+                             logger.error(f"Gemini transformation failed, returning error response: {final_response_data}")
+                             return JSONResponse(content=final_response_data, status_code=500)
+
 
                     # Return potentially transformed data with original success status code
                     return JSONResponse(content=final_response_data, status_code=backend_response.status_code)
