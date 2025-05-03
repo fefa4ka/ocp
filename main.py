@@ -266,9 +266,22 @@ async def chat_completions(request: Request):
                     # Return the raw JSON response from the backend
                     response_data = backend_response.json()
                     logger.info(f"Successfully received non-streaming response from backend for model '{model_id}'")
-                    logger.debug(f"Backend response data for model '{model_id}': {response_data}") # Log the response content
-                    # Return backend's status code and content directly
-                    return JSONResponse(content=response_data, status_code=backend_response.status_code)
+                    logger.debug(f"Backend response data for model '{model_id}': {response_data}")
+
+                    # --- Transform response if needed ---
+                    final_response_data = response_data
+                    if "/anthropic/" in handle.lower():
+                        logger.info(f"Transforming Anthropic response for model '{model_id}' to OpenAI format.")
+                        final_response_data = transform_anthropic_response_to_openai(response_data, model_id)
+                        # Check if transformation resulted in an error structure
+                        if "error" in final_response_data:
+                             # Use a client error status code if transformation failed badly
+                             # Or maybe 502 Bad Gateway if backend response was unusable? Let's use 500 for now.
+                             logger.error(f"Transformation failed, returning error response: {final_response_data}")
+                             return JSONResponse(content=final_response_data, status_code=500)
+
+                    # Return potentially transformed data with original success status code
+                    return JSONResponse(content=final_response_data, status_code=backend_response.status_code)
 
         except httpx.RequestError as e:
             logger.error(f"Error requesting backend {target_url}: {e}")
