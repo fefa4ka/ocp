@@ -1,10 +1,10 @@
 import logging
-from typing import List, Any, Dict
+from typing import List, Any, Dict, AsyncGenerator
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from config import settings
 from models import (
@@ -188,34 +188,69 @@ async def chat_completions(request: Request):
 
 
         # --- Forward the request ---
-        logger.info(f"Forwarding request for model '{model_id}' to {target_url}")
+        is_streaming = request_data.get("stream", False)
+        logger.info(f"Forwarding request for model '{model_id}' to {target_url}. Streaming: {is_streaming}")
+
         async with httpx.AsyncClient() as client:
             try:
-                backend_response = await client.post(
-                    target_url,
-                    json=request_data, # Forward the original request body
-                    headers=headers_to_forward,
-                    timeout=180.0 # Set a reasonable timeout for LLM requests
-                )
+                if is_streaming:
+                    # Define an async generator to stream the response chunks
+                    async def stream_generator() -> AsyncGenerator[bytes, None]:
+                        try:
+                            async with client.stream(
+                                "POST",
+                                target_url,
+                                json=request_data,
+                                headers=headers_to_forward,
+                                timeout=180.0
+                            ) as backend_response:
+                                # Check for backend errors *before* streaming body
+                                if backend_response.status_code >= 400:
+                                    error_body = await backend_response.aread()
+                                    error_detail = error_body.decode() or f"Backend error {backend_response.status_code}"
+                                    logger.error(f"Backend streaming request failed with status {backend_response.status_code}: {error_detail}")
+                                    # Raising here will likely result in a non-stream error response to the client
+                                    raise HTTPException(
+                                        status_code=backend_response.status_code,
+                                        detail=error_detail
+                                    )
 
-                # Raise exception for 4xx/5xx responses from the backend
-                backend_response.raise_for_status()
+                                # Stream the response body chunk by chunk
+                                async for chunk in backend_response.aiter_bytes():
+                                    yield chunk
+                            logger.info(f"Finished streaming response from backend for model '{model_id}'")
+                        except Exception as e:
+                            # Log errors occurring during the streaming process itself
+                            logger.error(f"Error during backend stream processing for model {model_id}: {e}")
+                            # Re-raise to signal an internal server error during streaming
+                            raise
 
-                # Return the raw JSON response from the backend
-                # Assumes the backend provides an OpenAI-compatible response.
-                # If not, transformation logic would be needed here.
-                response_data = backend_response.json()
-                logger.info(f"Successfully received response from backend for model '{model_id}'")
-                # Return backend's status code and content directly
-                return JSONResponse(content=response_data, status_code=backend_response.status_code)
+                    # Return a StreamingResponse using the generator
+                    # OpenAI standard content type for streaming is text/event-stream
+                    return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+                else: # Non-streaming request
+                    backend_response = await client.post(
+                        target_url,
+                        json=request_data, # Forward the original request body
+                        headers=headers_to_forward,
+                        timeout=180.0 # Set a reasonable timeout for LLM requests
+                    )
+
+                    # Raise exception for 4xx/5xx responses from the backend
+                    backend_response.raise_for_status()
+
+                    # Return the raw JSON response from the backend
+                    response_data = backend_response.json()
+                    logger.info(f"Successfully received non-streaming response from backend for model '{model_id}'")
+                    # Return backend's status code and content directly
+                    return JSONResponse(content=response_data, status_code=backend_response.status_code)
 
             except httpx.RequestError as e:
                 logger.error(f"Error requesting backend {target_url}: {e}")
                 raise HTTPException(status_code=503, detail=f"Error contacting backend service: {e}")
-            except httpx.HTTPStatusError as e:
-                 # Backend returned an error status code (4xx or 5xx)
+            except httpx.HTTPStatusError as e: # Caught for non-streaming errors
                  logger.error(f"Backend service at {target_url} returned error {e.response.status_code}: {e.response.text}")
-                 # Forward the backend's error response (content and status code) to the client
                  try:
                      error_content = e.response.json()
                  except Exception:
@@ -223,7 +258,7 @@ async def chat_completions(request: Request):
                  return JSONResponse(content=error_content, status_code=e.response.status_code)
 
     except HTTPException:
-         raise # Re-raise FastAPI HTTP exceptions
+         raise # Re-raise FastAPI HTTP exceptions (including those from stream_generator)
     except Exception as e:
         logger.exception(f"Unexpected error in chat_completions endpoint: {e}") # Log full traceback
         raise HTTPException(status_code=500, detail="Internal server error")
