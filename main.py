@@ -201,6 +201,7 @@ async def chat_completions(request: Request):
                 request_data["max_tokens"] = default_max_tokens
             # Add other Anthropic-specific transformations here if needed
             # e.g., mapping OpenAI 'messages' to Anthropic 'messages' + 'system' prompt
+            logger.debug(f"Anthropic request data after adjustments for model '{model_id}': {request_data}")
 
         # --- Forward the request ---
         is_streaming = request_data.get("stream", False)
