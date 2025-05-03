@@ -26,9 +26,18 @@ async def fetch_and_cache_models():
     """Fetches the model list from the source URL and caches it."""
     global model_cache, model_map
     logger.info(f"Fetching model list from: {settings.MODEL_LIST_URL}")
+
+    headers = {}
+    if settings.MODEL_LIST_AUTH_TOKEN:
+        headers["Authorization"] = f"OAuth {settings.MODEL_LIST_AUTH_TOKEN}"
+        logger.info("Using OAuth token for model list request.")
+    else:
+        logger.info("No auth token found for model list request.")
+
+
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(settings.MODEL_LIST_URL)
+            response = await client.get(settings.MODEL_LIST_URL, headers=headers)
             response.raise_for_status()  # Raise an exception for bad status codes
             source_models_data = response.json()
 

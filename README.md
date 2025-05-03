@@ -29,9 +29,10 @@ This allows users to interact with various underlying LLM providers (like OpenAI
 
 ## Configuration
 
-The proxy requires configuration, primarily the URL from which to fetch the model list. This can be set via an environment variable `MODEL_LIST_URL` or by creating a `.env` file in the project root.
+The proxy requires configuration, primarily the URL for the model list and potentially an authentication token. These can be set via environment variables or by creating a `.env` file in the project root.
 
-*   **`MODEL_LIST_URL`**: The URL to fetch the JSON list of models (e.g., `http://example.com/api/models.json`). Defaults to `http://localhost:8001/models.json` if not set.
+*   **`MODEL_LIST_URL`**: The URL to fetch the JSON list of models (e.g., `https://api.example.com/models`). Defaults to `https://api.eliza.yandex.net/models` if not set.
+*   **`MODEL_LIST_AUTH_TOKEN`**: (Optional) An OAuth token to include in the `Authorization: OAuth <token>` header when fetching the model list. If not provided, the request will be made without an Authorization header.
 
 ## Setup and Running
 
@@ -48,12 +49,13 @@ The proxy requires configuration, primarily the URL from which to fetch the mode
 
 3.  **Configure the Model List URL:**
     *   **Option A: Environment Variable:**
-        ```bash
         export MODEL_LIST_URL="<your_actual_model_list_source_url>"
+        export MODEL_LIST_AUTH_TOKEN="<your_oauth_token>" # Optional
         ```
     *   **Option B: `.env` file:** Create a file named `.env` in the project root with the following content:
         ```dotenv
         MODEL_LIST_URL=<your_actual_model_list_source_url>
+        MODEL_LIST_AUTH_TOKEN=<your_oauth_token> # Optional
         ```
 
 4.  **Run the server:**

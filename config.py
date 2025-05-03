@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     )
 
     MODEL_LIST_URL: str = "https://api.eliza.yandex.net/models"  # Example default
+    MODEL_LIST_AUTH_TOKEN: Optional[str] = None # Optional OAuth token for fetching the model list
 
 
 settings = Settings()
