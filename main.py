@@ -281,12 +281,21 @@ async def chat_completions(request: Request):
                             # Note: This assumes the non-Anthropic backend ALREADY sends OpenAI formatted SSE.
                             # If not, more transformation logic would be needed here too.
                             async for chunk in backend_response.aiter_bytes():
-                                # We need to yield SSE formatted strings, not raw bytes
-                                # Assuming the chunk itself is the 'data' part of an SSE message
-                                yield f"data: {chunk.decode()}\n\n" # Decode bytes and format as SSE
+                                # For OpenAI-compatible backends, forward the raw byte chunks directly.
+                                # FastAPI's StreamingResponse handles the content type.
+                                yield chunk
                             logger.info(f"Finished forwarding raw stream from backend for model '{requested_model}'")
 
-                        # Send the final [DONE] message for all streams
+                        # Send the final [DONE] message for all streams ONLY if not handled by backend
+                        # Note: OpenAI backends usually send their own [DONE] message.
+                        # Anthropic transformation adds its own [DONE].
+                        # Forwarding raw chunks might include the backend's [DONE].
+                        # Let's remove the explicit yield here for raw forwarding, assuming backend sends it.
+                        # yield "data: [DONE]\n\n" # Removed for raw forwarding case
+                        # logger.info(f"Sent [DONE] message for model '{requested_model}'.") # Removed for raw forwarding case
+                        if is_anthropic: # Keep explicit DONE for transformed streams
+                             yield "data: [DONE]\n\n"
+                             logger.info(f"Sent [DONE] message for model '{requested_model}'.")
                         yield "data: [DONE]\n\n"
                         logger.info(f"Sent [DONE] message for model '{requested_model}'.")
 
