@@ -138,20 +138,29 @@ async def chat_completions(request: Request):
     using the same host as the MODEL_LIST_URL and the same OAuth token.
     """
     try:
-        request_data = await request.json()
-        logger.debug(f"Received raw request data for chat completion: {request_data}") # Log the received data
-        # Optional: Validate request body structure against OpenAIChatCompletionRequest
+        # 1. Read the original request data first
+        original_request_data = await request.json()
+        logger.debug(f"Received raw request data for chat completion: {original_request_data}")
+
+        # 2. Determine streaming from the original request *before* any transformation
+        is_streaming = original_request_data.get("stream", False)
+
+        # 3. Make a copy to modify for the backend request payload
+        payload_for_backend = original_request_data.copy()
+
+        # Optional: Validate original request body structure against OpenAIChatCompletionRequest
         # try:
-        #     OpenAIChatCompletionRequest.model_validate(request_data)
+        #     OpenAIChatCompletionRequest.model_validate(original_request_data)
         # except Exception as e:
-        #     logger.warning(f"Request body validation failed: {e}")
+        #     logger.warning(f"Original request body validation failed: {e}")
         #     raise HTTPException(status_code=400, detail=f"Invalid request body: {e}")
 
-        model_id = request_data.get("model")
+        # 4. Perform model lookup using the model from the payload
+        model_id = payload_for_backend.get("model")
         if not model_id:
             raise HTTPException(status_code=400, detail="Missing 'model' field in request body")
 
-        logger.info(f"Received chat completion request for model: {model_id}")
+        logger.info(f"Received chat completion request for model: {model_id}. Streaming: {is_streaming}")
 
         # Find the model in the cached map
         target_model = model_map.get(model_id)
@@ -196,45 +205,39 @@ async def chat_completions(request: Request):
             # raise HTTPException(status_code=500, detail="Server configuration error: Missing auth token for backend.")
 
 
-        # --- API Specific Adjustments (Example for Anthropic) ---
-        # Modify request_data if needed based on the target backend
-        logger.debug(f"Checking handle '{handle}' for API specific adjustments.") # Log the handle being checked
+        # --- API Specific Adjustments ---
+        # Modify payload_for_backend if needed based on the target backend
+        logger.debug(f"Checking handle '{handle}' for API specific adjustments.")
         if "/anthropic/" in handle.lower():
-            if "max_tokens" not in request_data or request_data.get("max_tokens") is None:
+            # Adjust payload_for_backend in place for Anthropic
+            if "max_tokens" not in payload_for_backend or payload_for_backend.get("max_tokens") is None:
                 default_max_tokens = 4096 # Set a reasonable default for Anthropic
                 logger.warning(f"Anthropic request for model '{model_id}' missing 'max_tokens'. Applying default: {default_max_tokens}")
-                request_data["max_tokens"] = default_max_tokens
+                payload_for_backend["max_tokens"] = default_max_tokens
             # Add other Anthropic-specific transformations here if needed
-            logger.debug(f"Anthropic request data after adjustments for model '{model_id}': {request_data}")
+            logger.debug(f"Anthropic payload for backend after adjustments for model '{model_id}': {payload_for_backend}")
         elif "/gemini/" in handle.lower():
-            # Transform OpenAI request to Gemini format
-            original_request_data = request_data.copy() # Keep original for streaming flag
-            request_data = transform_openai_request_to_gemini(request_data)
-            logger.debug(f"Gemini request data after transformation for model '{model_id}': {request_data}")
-            # Gemini uses URL param for streaming, not body field
-            if original_request_data.get("stream", False):
+            # 5. Transform payload_for_backend for Gemini
+            # This replaces the variable with the transformed dictionary
+            payload_for_backend = transform_openai_request_to_gemini(payload_for_backend)
+            logger.debug(f"Gemini payload for backend after transformation for model '{model_id}': {payload_for_backend}")
+            # Adjust target_url for streaming if needed
+            if is_streaming: # Use the flag determined from original request
                  if "?" in target_url:
                      target_url += "&alt=sse"
                  else:
                      target_url += "?alt=sse"
                  logger.info(f"Using Gemini streaming endpoint: {target_url}")
+            # Note: Non-streaming Gemini requests do not need ?alt=sse
 
 
         # --- Forward the request ---
-        # Determine streaming based on original request, as 'stream' is removed for Gemini
-        is_streaming = request_data.get("stream", False)
-        if "/gemini/" in handle.lower():
-             # Check the *original* request data copy for the stream flag,
-             # as 'stream' is removed during transformation for the actual payload.
-             is_streaming = original_request_data.get("stream", False)
-
-
         logger.info(f"Forwarding request for model '{model_id}' to {target_url}. Streaming: {is_streaming}")
 
         # Define the stream generator here, accepting necessary parameters
         async def stream_generator(
             req_url: str,
-            req_data: dict,
+            backend_payload: dict, # Renamed parameter for clarity
             req_headers: dict,
             target_handle: str,
             requested_model: str
@@ -266,10 +269,10 @@ async def chat_completions(request: Request):
 
                     # Log the actual data being sent for Gemini streaming requests
                     if is_gemini:
-                        logger.debug(f"Gemini stream request payload being sent to {req_url}: {req_data}")
+                        logger.debug(f"Gemini stream request payload being sent to {req_url}: {backend_payload}")
 
                     async with stream_client.stream(
-                        request_method, req_url, json=req_data, headers=req_headers, timeout=180.0
+                        request_method, req_url, json=backend_payload, headers=req_headers, timeout=180.0
                     ) as backend_response:
                         # Check for backend errors *before* streaming body
                         if backend_response.status_code >= 400:
@@ -388,24 +391,24 @@ async def chat_completions(request: Request):
                     yield "data: [DONE]\n\n" # Still send DONE after error? OpenAI spec implies yes.
 
 
-        # Now, handle the request based on streaming flag
+        # Now, handle the request based on the is_streaming flag determined earlier
         try:
             if is_streaming:
-                # Log the data being passed to the generator for Gemini
-                if "/gemini/" in handle.lower():
-                    logger.debug(f"Passing transformed data to stream_generator for Gemini: {request_data}")
-                # Create the generator instance, passing the required arguments
-                generator = stream_generator(target_url, request_data, headers_to_forward, handle, model_id)
+                # Log the data being passed to the generator
+                logger.debug(f"Passing payload to stream_generator: {payload_for_backend}")
+                # Create the generator instance, passing the potentially transformed payload
+                generator = stream_generator(target_url, payload_for_backend, headers_to_forward, handle, model_id)
                 # Return a StreamingResponse using the generator
                 # OpenAI standard content type for streaming is text/event-stream
                 return StreamingResponse(generator, media_type="text/event-stream")
 
             else: # Non-streaming request
                 # Use a separate client instance for non-streaming requests
+                logger.debug(f"Sending non-streaming payload to backend: {payload_for_backend}")
                 async with httpx.AsyncClient() as client:
                     backend_response = await client.post(
                         target_url,
-                        json=request_data, # Forward the original request body
+                        json=payload_for_backend, # Send the potentially transformed payload
                         headers=headers_to_forward,
                         timeout=180.0 # Set a reasonable timeout for LLM requests
                     )
