@@ -216,11 +216,11 @@ async def chat_completions(request: Request):
                 payload_for_backend["max_tokens"] = default_max_tokens
             # Add other Anthropic-specific transformations here if needed
             logger.debug(f"Anthropic payload for backend after adjustments for model '{model_id}': {payload_for_backend}")
-        elif "/gemini/" in handle.lower():
+        elif "/google/" in handle.lower(): # Check for /google/ instead of /gemini/
             # 5. Transform payload_for_backend for Gemini
             # This replaces the variable with the transformed dictionary
             payload_for_backend = transform_openai_request_to_gemini(payload_for_backend)
-            logger.debug(f"Gemini payload for backend after transformation for model '{model_id}': {payload_for_backend}")
+            logger.debug(f"Google/Gemini payload for backend after transformation for model '{model_id}': {payload_for_backend}")
             # Adjust target_url for streaming if needed
             if is_streaming: # Use the flag determined from original request
                  if "?" in target_url:
