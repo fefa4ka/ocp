@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from config import settings
-from models import OpenAIModel, OpenAIModelList, SourceModel
+from models import OpenAIModel, OpenAIModelList, SourceModel, SourceModelList
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,12 +39,12 @@ async def fetch_and_cache_models():
         try:
             response = await client.get(settings.MODEL_LIST_URL, headers=headers)
             response.raise_for_status()  # Raise an exception for bad status codes
-            source_models_data = response.json()
+            source_data = response.json()
 
-            # Validate data using Pydantic
-            validated_models = [SourceModel.model_validate(m) for m in source_models_data]
+            # Validate data using Pydantic, expecting {"models": [...]}
+            validated_source_list = SourceModelList.model_validate(source_data)
 
-            model_cache = validated_models
+            model_cache = validated_source_list.models
             model_map = {model.model_version: model for model in model_cache}
             logger.info(f"Successfully fetched and cached {len(model_cache)} models.")
 

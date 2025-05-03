@@ -15,6 +15,11 @@ class SourceModel(BaseModel):
     completion_price_1k: Optional[float] = Field(None, description="Price per 1k completion tokens.")
 
 
+class SourceModelList(BaseModel):
+    """Represents the top-level structure of the source model list JSON."""
+    models: List[SourceModel]
+
+
 # --- OpenAI Model Definition ---
 class OpenAIModel(BaseModel):
     """Represents the structure of a model object in OpenAI's /v1/models format."""

@@ -127,10 +127,35 @@ The proxy will identify the `handle` for this model (`/fireworks/chat/completion
 
 ## Example Source Model List Format
 
-The proxy expects the model list fetched from `MODEL_LIST_URL` to be a JSON array with objects similar to this:
+The proxy expects the model list fetched from `MODEL_LIST_URL` to be a JSON object with a `models` key containing an array of objects, similar to this:
 
 ```json
-[
+{
+  "models": [
+    {
+      "model_version": "gpt-4o-audio-preview-2024-10-01",
+      "model_family": "gpt-4",
+      "handle": "/openai/v1/chat/completions",
+      "prompt_price_1k": 0.0025,
+      "completion_price_1k": 0.01
+    },
+    {
+      "model_version": "accounts/fireworks/models/llama-v3p1-405b-instruct",
+      "model_family": "fireworks",
+      "handle": "/fireworks/chat/completions",
+      "prompt_price_1k": 0.003,
+      "completion_price_1k": 0.003
+    },
+    {
+      "model_version": "claude-3-7-sonnet-20250219",
+      "model_family": "claude-3",
+      "handle": "/anthropic/v1/messages",
+      "prompt_price_1k": 0.003,
+      "completion_price_1k": 0.015
+    }
+    // ... other models
+  ]
+}
   {
     "model_version": "gpt-4o-audio-preview-2024-10-01",
     "model_family": "gpt-4",
@@ -152,8 +177,6 @@ The proxy expects the model list fetched from `MODEL_LIST_URL` to be a JSON arra
     "prompt_price_1k": 0.003,
     "completion_price_1k": 0.015
   }
-  // ... other models
-]
 ```
 
 ## Future Enhancements
