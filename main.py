@@ -198,6 +198,7 @@ async def chat_completions(request: Request):
 
         # --- API Specific Adjustments (Example for Anthropic) ---
         # Modify request_data if needed based on the target backend
+        logger.debug(f"Checking handle '{handle}' for API specific adjustments.") # Log the handle being checked
         if "/anthropic/" in handle.lower():
             if "max_tokens" not in request_data or request_data.get("max_tokens") is None:
                 default_max_tokens = 4096 # Set a reasonable default for Anthropic
