@@ -8,7 +8,7 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    MODEL_LIST_URL: str = "http://localhost:8001/models.json"  # Example default
+    MODEL_LIST_URL: str = "https://api.eliza.yandex.net/models"  # Example default
 
 
 settings = Settings()
