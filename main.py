@@ -263,6 +263,10 @@ async def chat_completions(request: Request):
                     # Example: if target_handle == "/gemini/v1beta/models/gemini-pro:streamGenerateContent":
                     #     request_method = "POST" # Or GET if required by specific Gemini endpoint
 
+                    # Log the actual data being sent for Gemini streaming requests
+                    if is_gemini:
+                        logger.debug(f"Gemini stream request payload being sent to {req_url}: {req_data}")
+
                     async with stream_client.stream(
                         request_method, req_url, json=req_data, headers=req_headers, timeout=180.0
                     ) as backend_response:
