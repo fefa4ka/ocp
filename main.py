@@ -240,7 +240,11 @@ async def chat_completions(request: Request):
                     backend_response = await client.post(
                         target_url,
                         json=request_data, # Forward the original request body
-                                headers=headers_to_forward,
+                        headers=headers_to_forward,
+                        timeout=180.0 # Set a reasonable timeout for LLM requests
+                    )
+
+                    # Raise exception for 4xx/5xx responses from the backend
                     backend_response.raise_for_status()
 
                     # Return the raw JSON response from the backend
