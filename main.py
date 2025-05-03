@@ -1,5 +1,5 @@
 import logging
-from typing import List, Any, Dict, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict, List
 from urllib.parse import urlparse
 
 import httpx
@@ -8,8 +8,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from config import settings
 from models import (
-    OpenAIModel, OpenAIModelList, SourceModel, SourceModelList,
-    OpenAIChatCompletionRequest # Added import
+    OpenAIChatCompletionRequest,  # Added import
+    OpenAIModel,
+    OpenAIModelList,
+    SourceModel,
+    SourceModelList,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -260,9 +263,9 @@ async def chat_completions(request: Request):
              logger.error(f"Backend service at {target_url} returned error {e.response.status_code}: {e.response.text}")
              try:
                  error_content = e.response.json()
-                 except Exception:
-                     error_content = {"detail": e.response.text} # Fallback if response is not JSON
-                 return JSONResponse(content=error_content, status_code=e.response.status_code)
+             except Exception:
+                 error_content = {"detail": e.response.text} # Fallback if response is not JSON
+             return JSONResponse(content=error_content, status_code=e.response.status_code)
 
     except HTTPException:
          raise # Re-raise FastAPI HTTP exceptions (including those from stream_generator)
