@@ -1,3 +1,4 @@
+import json # Add json import
 import logging
 import time # Add time import
 from typing import Any, AsyncGenerator, Dict, List
@@ -209,44 +210,108 @@ async def chat_completions(request: Request):
         logger.info(f"Forwarding request for model '{model_id}' to {target_url}. Streaming: {is_streaming}")
 
         # Define the stream generator here, accepting necessary parameters
-        async def stream_generator(req_url: str, req_data: dict, req_headers: dict) -> AsyncGenerator[bytes, None]:
-            # Create the client *inside* the generator to manage its lifecycle correctly
+        async def stream_generator(
+            req_url: str,
+            req_data: dict,
+            req_headers: dict,
+            target_handle: str,
+            requested_model: str
+        ) -> AsyncGenerator[str, None]:
+            """
+            Streams response from backend. If the backend is Anthropic,
+            transforms SSE events to OpenAI format. Otherwise, streams raw chunks.
+            Yields strings formatted as SSE messages ('data: ...\n\n').
+            """
+            is_anthropic = "/anthropic/" in target_handle.lower()
+            openai_chunk_id = f"chatcmpl-anthropic-{int(time.time())}" # Generate a base ID for the stream
+
             async with httpx.AsyncClient() as stream_client:
                 try:
                     async with stream_client.stream(
-                        "POST",
-                        req_url,
-                        json=req_data,
-                        headers=req_headers,
-                        timeout=180.0
+                        "POST", req_url, json=req_data, headers=req_headers, timeout=180.0
                     ) as backend_response:
                         # Check for backend errors *before* streaming body
                         if backend_response.status_code >= 400:
                             error_body = await backend_response.aread()
                             error_detail = error_body.decode() or f"Backend error {backend_response.status_code}"
                             logger.error(f"Backend streaming request failed with status {backend_response.status_code}: {error_detail}")
-                            # Raising here will be caught by Starlette's error handling for streaming responses
-                            raise HTTPException(
-                                status_code=backend_response.status_code,
-                                detail=error_detail
-                            )
+                            # Yield an OpenAI-like error chunk before raising? Or just raise? Let's just raise.
+                            raise HTTPException(status_code=backend_response.status_code, detail=error_detail)
 
-                        # Stream the response body chunk by chunk
-                        async for chunk in backend_response.aiter_bytes():
-                            yield chunk
-                    logger.info(f"Finished streaming response from backend for model '{model_id}'")
+                        logger.info(f"Starting stream processing for model '{requested_model}'. Anthropic transformation: {is_anthropic}")
+
+                        if is_anthropic:
+                            # Process Anthropic SSE stream line by line
+                            current_event = None
+                            current_data_lines = []
+                            async for line in backend_response.aiter_lines():
+                                logger.debug(f"Raw Anthropic SSE line: {line}")
+                                if line.startswith("event:"):
+                                    current_event = line[len("event:"):].strip()
+                                    current_data_lines = [] # Reset data for new event
+                                elif line.startswith("data:"):
+                                    current_data_lines.append(line[len("data:"):].strip())
+                                elif line == "": # Empty line signifies end of an event
+                                    if current_event and current_data_lines:
+                                        data_str = "".join(current_data_lines)
+                                        try:
+                                            event_data = json.loads(data_str)
+                                            logger.debug(f"Parsed Anthropic event: {current_event}, data: {event_data}")
+
+                                            openai_chunk = transform_anthropic_stream_chunk_to_openai(
+                                                current_event, event_data, openai_chunk_id, requested_model
+                                            )
+
+                                            if openai_chunk:
+                                                yield f"data: {json.dumps(openai_chunk)}\n\n"
+                                                logger.debug(f"Yielded transformed OpenAI chunk: {openai_chunk}")
+
+                                        except json.JSONDecodeError:
+                                            logger.error(f"Failed to decode JSON data for event {current_event}: {data_str}")
+                                        except Exception as transform_err:
+                                             logger.exception(f"Error transforming Anthropic chunk: {transform_err}")
+
+                                    # Reset for next event
+                                    current_event = None
+                                    current_data_lines = []
+                            # After the loop, Anthropic stream is done
+                            logger.info(f"Anthropic stream finished for model '{requested_model}'.")
+
+                        else: # Not Anthropic, assume OpenAI compatible stream (forward raw chunks)
+                            # Note: This assumes the non-Anthropic backend ALREADY sends OpenAI formatted SSE.
+                            # If not, more transformation logic would be needed here too.
+                            async for chunk in backend_response.aiter_bytes():
+                                # We need to yield SSE formatted strings, not raw bytes
+                                # Assuming the chunk itself is the 'data' part of an SSE message
+                                yield f"data: {chunk.decode()}\n\n" # Decode bytes and format as SSE
+                            logger.info(f"Finished forwarding raw stream from backend for model '{requested_model}'")
+
+                        # Send the final [DONE] message for all streams
+                        yield "data: [DONE]\n\n"
+                        logger.info(f"Sent [DONE] message for model '{requested_model}'.")
+
+                except HTTPException:
+                     raise # Re-raise HTTP exceptions from status check
                 except Exception as e:
                     # Log errors occurring during the streaming process itself
-                    logger.error(f"Error during backend stream processing for model {model_id}: {e}")
-                    # Re-raise to signal an internal server error during streaming
-                    # This will likely terminate the stream prematurely for the client.
-                    raise
+                    logger.exception(f"Error during backend stream processing for model {requested_model}: {e}")
+                    # Yielding an error message might be better for the client than just stopping.
+                    error_payload = {
+                        "error": {
+                            "message": f"Proxy error during streaming: {e}",
+                            "type": "proxy_error",
+                            "code": "stream_processing_error"
+                        }
+                    }
+                    yield f"data: {json.dumps(error_payload)}\n\n"
+                    yield "data: [DONE]\n\n" # Still send DONE after error? OpenAI spec implies yes.
+
 
         # Now, handle the request based on streaming flag
         try:
             if is_streaming:
                 # Create the generator instance, passing the required arguments
-                generator = stream_generator(target_url, request_data, headers_to_forward)
+                generator = stream_generator(target_url, request_data, headers_to_forward, handle, model_id)
                 # Return a StreamingResponse using the generator
                 # OpenAI standard content type for streaming is text/event-stream
                 return StreamingResponse(generator, media_type="text/event-stream")
@@ -390,6 +455,107 @@ def transform_anthropic_response_to_openai(anthropic_data: Dict[str, Any], reque
                 "code": "transformation_error"
             }
         }
+
+
+def transform_anthropic_stream_chunk_to_openai(
+    event_type: str, event_data: Dict[str, Any], chunk_id: str, model_id: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Transforms a parsed Anthropic SSE event (type and data) into an OpenAI
+    Chat Completion Chunk dictionary. Returns None if the event doesn't map.
+    """
+    logger.debug(f"Transforming Anthropic event: {event_type}")
+    openai_chunk = {
+        "id": chunk_id, # Use the consistent ID for all chunks in the stream
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_id,
+        "choices": [{
+            "index": 0,
+            "delta": {}, # Populated based on event type
+            "finish_reason": None,
+            "logprobs": None,
+        }],
+        "usage": None, # Anthropic sends usage in message_delta or message_stop
+        "system_fingerprint": None, # Not provided by Anthropic
+    }
+
+    try:
+        if event_type == "message_start":
+            # message_start contains the initial message structure, including role
+            # We can potentially extract the role for the first delta chunk.
+            role = event_data.get("message", {}).get("role", "assistant")
+            openai_chunk["choices"][0]["delta"] = {"role": role}
+            # Anthropic also sends usage here, but OpenAI expects it at the end.
+            # We could store it and add it to the *last* chunk if needed, but
+            # OpenAI clients usually ignore usage in intermediate chunks.
+
+        elif event_type == "content_block_delta":
+            # This event contains the actual text changes
+            delta_info = event_data.get("delta", {})
+            if delta_info.get("type") == "text_delta":
+                text_delta = delta_info.get("text", "")
+                if text_delta: # Only include content if there is text
+                     openai_chunk["choices"][0]["delta"] = {"content": text_delta}
+                else:
+                     return None # No actual content change, skip chunk
+
+        elif event_type == "message_delta":
+            # This event signals the end of the message and provides stop reason/usage
+            delta_info = event_data.get("delta", {})
+            stop_reason = delta_info.get("stop_reason")
+            usage_update = event_data.get("usage", {}) # Contains output_tokens
+
+            if stop_reason:
+                 # Map Anthropic stop reasons to OpenAI finish reasons
+                 finish_reason_map = {
+                     "end_turn": "stop",
+                     "max_tokens": "length",
+                     "stop_sequence": "stop",
+                     # Add other mappings if needed: tool_use?
+                 }
+                 finish_reason = finish_reason_map.get(stop_reason, stop_reason)
+                 openai_chunk["choices"][0]["finish_reason"] = finish_reason
+                 openai_chunk["choices"][0]["delta"] = {} # Delta is empty for the final chunk
+
+                 # Add usage info if available (OpenAI spec includes it in the *last* chunk)
+                 # Note: Anthropic provides output tokens here, but not input tokens.
+                 # Input tokens are in message_start. Combining them accurately in
+                 # the final chunk is complex. For now, let's omit usage from streaming.
+                 # if usage_update.get("output_tokens"):
+                 #    openai_chunk["usage"] = {"completion_tokens": usage_update["output_tokens"]}
+                 #    # We'd need to have stored prompt_tokens from message_start to add total_tokens
+
+            else:
+                 # message_delta might occur without stop_reason (e.g., intermediate updates)
+                 # In this case, it doesn't directly map to an OpenAI chunk, so skip.
+                 return None
+
+        elif event_type == "message_stop":
+            # This confirms the stream end from Anthropic's side.
+            # OpenAI uses `data: [DONE]\n\n`, which is handled outside this function.
+            # We might extract final usage here if needed and not captured in message_delta.
+            return None # No direct OpenAI chunk equivalent
+
+        elif event_type == "ping":
+            # Keepalive event, ignore.
+            return None
+
+        else:
+            # Unknown event type
+            logger.warning(f"Unhandled Anthropic SSE event type: {event_type}")
+            return None
+
+        # Only return the chunk if delta is not empty or finish_reason is set
+        if openai_chunk["choices"][0]["delta"] or openai_chunk["choices"][0]["finish_reason"]:
+            return openai_chunk
+        else:
+            # Avoid sending empty chunks if no delta/finish_reason was populated
+            return None
+
+    except Exception as e:
+        logger.exception(f"Error processing Anthropic event type {event_type} data {event_data}: {e}")
+        return None # Skip chunk on error
 
 
 if __name__ == "__main__":
