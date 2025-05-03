@@ -1,7 +1,7 @@
 import json # Add json import
 import logging
 import time # Add time import
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator, Dict, List, Optional # Import Optional
 from urllib.parse import urlparse
 
 import httpx
