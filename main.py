@@ -253,13 +253,13 @@ async def chat_completions(request: Request):
                     # Return backend's status code and content directly
                     return JSONResponse(content=response_data, status_code=backend_response.status_code)
 
-            except httpx.RequestError as e:
-                logger.error(f"Error requesting backend {target_url}: {e}")
-                raise HTTPException(status_code=503, detail=f"Error contacting backend service: {e}")
-            except httpx.HTTPStatusError as e: # Caught for non-streaming errors
-                 logger.error(f"Backend service at {target_url} returned error {e.response.status_code}: {e.response.text}")
-                 try:
-                     error_content = e.response.json()
+        except httpx.RequestError as e:
+            logger.error(f"Error requesting backend {target_url}: {e}")
+            raise HTTPException(status_code=503, detail=f"Error contacting backend service: {e}")
+        except httpx.HTTPStatusError as e: # Caught for non-streaming errors
+             logger.error(f"Backend service at {target_url} returned error {e.response.status_code}: {e.response.text}")
+             try:
+                 error_content = e.response.json()
                  except Exception:
                      error_content = {"detail": e.response.text} # Fallback if response is not JSON
                  return JSONResponse(content=error_content, status_code=e.response.status_code)
