@@ -110,6 +110,8 @@ async def get_models():
             owned_by = "anthropic"
         elif "fireworks" in model.handle.lower():
              owned_by = "fireworks"
+        elif "gemini" in model.handle.lower():
+             owned_by = "google"
         # Add more specific rules as needed
 
         openai_models.append(
@@ -202,11 +204,30 @@ async def chat_completions(request: Request):
                 logger.warning(f"Anthropic request for model '{model_id}' missing 'max_tokens'. Applying default: {default_max_tokens}")
                 request_data["max_tokens"] = default_max_tokens
             # Add other Anthropic-specific transformations here if needed
-            # e.g., mapping OpenAI 'messages' to Anthropic 'messages' + 'system' prompt
             logger.debug(f"Anthropic request data after adjustments for model '{model_id}': {request_data}")
+        elif "/gemini/" in handle.lower():
+            # Transform OpenAI request to Gemini format
+            original_request_data = request_data.copy() # Keep original for streaming flag
+            request_data = transform_openai_request_to_gemini(request_data)
+            logger.debug(f"Gemini request data after transformation for model '{model_id}': {request_data}")
+            # Gemini uses URL param for streaming, not body field
+            if original_request_data.get("stream", False):
+                 if "?" in target_url:
+                     target_url += "&alt=sse"
+                 else:
+                     target_url += "?alt=sse"
+                 logger.info(f"Using Gemini streaming endpoint: {target_url}")
+
 
         # --- Forward the request ---
+        # Determine streaming based on original request, as 'stream' is removed for Gemini
         is_streaming = request_data.get("stream", False)
+        if "/gemini/" in handle.lower():
+             # Check original request data for Gemini, as 'stream' field is removed during transformation
+             original_req_data_for_stream_check = await request.json() # Re-read original data to check stream flag
+             is_streaming = original_req_data_for_stream_check.get("stream", False)
+
+
         logger.info(f"Forwarding request for model '{model_id}' to {target_url}. Streaming: {is_streaming}")
 
         # Define the stream generator here, accepting necessary parameters
@@ -223,11 +244,30 @@ async def chat_completions(request: Request):
             Yields strings formatted as SSE messages ('data: ...\n\n').
             """
             is_anthropic = "/anthropic/" in target_handle.lower()
-            openai_chunk_id = f"chatcmpl-anthropic-{int(time.time())}" # Generate a base ID for the stream
+            is_gemini = "/gemini/" in target_handle.lower()
+            # Generate a base ID for the stream, potentially vendor-specific
+            if is_anthropic:
+                openai_chunk_id = f"chatcmpl-anthropic-{int(time.time())}"
+            elif is_gemini:
+                openai_chunk_id = f"chatcmpl-gemini-{int(time.time())}"
+            else: # Default/OpenAI compatible
+                openai_chunk_id = f"chatcmpl-proxy-{int(time.time())}"
+
 
             async with httpx.AsyncClient() as stream_client:
                 try:
+                    # Gemini streaming uses GET for some models/versions, POST for others.
+                    # Assuming POST based on typical generative AI patterns. Adjust if needed.
+                    # Also, Gemini streaming URL already has ?alt=sse appended earlier.
+                    request_method = "POST"
+                    # Example: if target_handle == "/gemini/v1beta/models/gemini-pro:streamGenerateContent":
+                    #     request_method = "POST" # Or GET if required by specific Gemini endpoint
+
                     async with stream_client.stream(
+                        request_method, req_url, json=req_data, headers=req_headers, timeout=180.0
+                    ) as backend_response:
+                        # Check for backend errors *before* streaming body
+                        if backend_response.status_code >= 400:
                         "POST", req_url, json=req_data, headers=req_headers, timeout=180.0
                     ) as backend_response:
                         # Check for backend errors *before* streaming body
@@ -277,9 +317,43 @@ async def chat_completions(request: Request):
                             # After the loop, Anthropic stream is done
                             logger.info(f"Anthropic stream finished for model '{requested_model}'.")
 
-                        else: # Not Anthropic, assume OpenAI compatible stream (forward raw chunks)
-                            # Note: This assumes the non-Anthropic backend ALREADY sends OpenAI formatted SSE.
-                            # If not, more transformation logic would be needed here too.
+                        elif is_gemini:
+                             # Process Gemini SSE stream (JSON objects per line)
+                             async for line in backend_response.aiter_lines():
+                                 logger.debug(f"Raw Gemini SSE line: {line}")
+                                 # Gemini streams JSON objects, sometimes prefixed with "data: "
+                                 if line.startswith("data: "):
+                                     line = line[len("data: "):]
+                                 line = line.strip()
+                                 if not line:
+                                     continue # Skip empty lines
+
+                                 try:
+                                     # Gemini streams a list containing one chunk object usually
+                                     chunk_list = json.loads(line)
+                                     if isinstance(chunk_list, list) and len(chunk_list) > 0:
+                                         gemini_chunk_data = chunk_list[0] # Process the first item
+                                         logger.debug(f"Parsed Gemini chunk data: {gemini_chunk_data}")
+
+                                         openai_chunk = transform_gemini_stream_chunk_to_openai(
+                                             gemini_chunk_data, openai_chunk_id, requested_model
+                                         )
+
+                                         if openai_chunk:
+                                             yield f"data: {json.dumps(openai_chunk)}\n\n"
+                                             logger.debug(f"Yielded transformed OpenAI chunk: {openai_chunk}")
+                                     else:
+                                         logger.warning(f"Received unexpected Gemini stream format (not a list or empty): {line}")
+
+                                 except json.JSONDecodeError:
+                                     logger.error(f"Failed to decode JSON data from Gemini stream: {line}")
+                                 except Exception as transform_err:
+                                     logger.exception(f"Error transforming Gemini chunk: {transform_err}")
+                             logger.info(f"Gemini stream finished for model '{requested_model}'.")
+
+
+                        else: # Not Anthropic or Gemini, assume OpenAI compatible stream (forward raw chunks)
+                            # Note: This assumes the non-Anthropic/non-Gemini backend ALREADY sends OpenAI formatted SSE.
                             async for chunk in backend_response.aiter_bytes():
                                 # For OpenAI-compatible backends, forward the raw byte chunks directly.
                                 # FastAPI's StreamingResponse handles the content type.
@@ -290,14 +364,11 @@ async def chat_completions(request: Request):
                         # Note: OpenAI backends usually send their own [DONE] message.
                         # Anthropic transformation adds its own [DONE].
                         # Forwarding raw chunks might include the backend's [DONE].
-                        # Let's remove the explicit yield here for raw forwarding, assuming backend sends it.
-                        # yield "data: [DONE]\n\n" # Removed for raw forwarding case
-                        # logger.info(f"Sent [DONE] message for model '{requested_model}'.") # Removed for raw forwarding case
-                        if is_anthropic: # Keep explicit DONE for transformed streams
+                        # Send the final [DONE] message for transformed streams
+                        if is_anthropic or is_gemini:
                              yield "data: [DONE]\n\n"
                              logger.info(f"Sent [DONE] message for model '{requested_model}'.")
-                        yield "data: [DONE]\n\n"
-                        logger.info(f"Sent [DONE] message for model '{requested_model}'.")
+                        # For raw forwarding, assume the backend sends its own [DONE] if needed.
 
                 except HTTPException:
                      raise # Re-raise HTTP exceptions from status check
@@ -455,7 +526,7 @@ def transform_anthropic_response_to_openai(anthropic_data: Dict[str, Any], reque
         return openai_response
 
     except Exception as e:
-        logger.exception(f"Error transforming Anthropic response: {e}. Original data: {anthropic_data}")
+        logger.exception(f"Error transforming Anthropic non-streaming response: {e}. Original data: {anthropic_data}")
         # Return a generic error structure
         return {
             "error": {
@@ -563,7 +634,274 @@ def transform_anthropic_stream_chunk_to_openai(
             return None
 
     except Exception as e:
-        logger.exception(f"Error processing Anthropic event type {event_type} data {event_data}: {e}")
+        logger.exception(f"Error transforming Anthropic stream chunk: {e}. Event: {event_type}, Data: {event_data}")
+        return None # Skip chunk on error
+
+
+# --- Gemini Transformation Functions ---
+
+def transform_openai_request_to_gemini(openai_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Transforms an OpenAI Chat Completion request to a Gemini API request."""
+    logger.debug("Transforming OpenAI request to Gemini format.")
+    gemini_request = {"contents": []}
+    generation_config = {}
+    safety_settings = [] # Optional: Add default safety settings if needed
+
+    # Map messages to contents
+    system_prompt = None
+    for message in openai_data.get("messages", []):
+        role = message.get("role")
+        content = message.get("content")
+
+        if not content: # Skip messages without content
+            continue
+
+        # Handle system prompt (Gemini prefers it at the start or via specific field)
+        # Simple approach: Prepend system prompt to the first user message content.
+        # More robust: Use Gemini's 'system_instruction' field if available/supported by endpoint.
+        if role == "system":
+            system_prompt = content
+            continue # Don't add system message directly to contents yet
+
+        # Map roles
+        gemini_role = "user" # Default
+        if role == "assistant":
+            gemini_role = "model"
+        elif role == "tool":
+            # TODO: Handle tool calls/results if needed for Gemini
+            logger.warning("Gemini transformation: Tool messages not fully handled yet.")
+            continue # Skip tool messages for now
+
+        # Combine system prompt with the first user message
+        if gemini_role == "user" and system_prompt:
+            content = f"{system_prompt}\n\n{content}"
+            system_prompt = None # Only add it once
+
+        # Gemini expects content as {"parts": [{"text": "..."}]}
+        gemini_request["contents"].append({
+            "role": gemini_role,
+            "parts": [{"text": content}]
+        })
+
+    # Handle case where only a system prompt was provided (maybe less common)
+    if system_prompt and not gemini_request["contents"]:
+         gemini_request["contents"].append({
+             "role": "user", # Treat standalone system prompt as initial user message
+             "parts": [{"text": system_prompt}]
+         })
+
+    # Map generation parameters
+    if openai_data.get("max_tokens") is not None:
+        generation_config["maxOutputTokens"] = openai_data["max_tokens"]
+    if openai_data.get("temperature") is not None:
+        generation_config["temperature"] = openai_data["temperature"]
+    if openai_data.get("top_p") is not None:
+        generation_config["topP"] = openai_data["top_p"]
+    if openai_data.get("stop"):
+        # Ensure stop sequences are strings
+        stop_sequences = [str(s) for s in openai_data["stop"]]
+        generation_config["stopSequences"] = stop_sequences
+    # Gemini doesn't directly support 'n', 'presence_penalty', 'frequency_penalty', 'logit_bias' in the same way
+    if openai_data.get("n", 1) > 1:
+        logger.warning("Gemini transformation: 'n > 1' is not directly supported. Requesting only one candidate.")
+        generation_config["candidateCount"] = 1 # Explicitly set to 1, though often the default
+    if any(k in openai_data for k in ["presence_penalty", "frequency_penalty", "logit_bias"]):
+        logger.warning("Gemini transformation: 'presence_penalty', 'frequency_penalty', 'logit_bias' are not supported.")
+
+
+    # Add generationConfig if not empty
+    if generation_config:
+        gemini_request["generationConfig"] = generation_config
+
+    # Add safetySettings if configured
+    if safety_settings:
+        gemini_request["safetySettings"] = safety_settings
+
+    # Remove OpenAI-specific fields not used by Gemini (like 'stream', 'model')
+    # 'stream' is handled via URL param (?alt=sse)
+    # 'model' is implicit in the endpoint URL
+
+    logger.debug(f"Transformed Gemini request: {gemini_request}")
+    return gemini_request
+
+
+def transform_gemini_response_to_openai(gemini_data: Dict[str, Any], requested_model_id: str) -> Dict[str, Any]:
+    """Transforms a non-streaming Gemini API response into the OpenAI Chat Completion format."""
+    logger.debug(f"Attempting to transform Gemini response for model {requested_model_id}")
+    try:
+        # Gemini response structure: { "candidates": [...], "usageMetadata": {...} }
+        candidates = gemini_data.get("candidates", [])
+        usage_metadata = gemini_data.get("usageMetadata", {})
+
+        if not candidates:
+            logger.error("Gemini response data is missing 'candidates' field.")
+            return {
+                "error": {
+                    "message": "Invalid response format received from Gemini backend (missing 'candidates').",
+                    "type": "proxy_error", "code": "invalid_backend_response"
+                }
+            }
+
+        # Process the first candidate
+        first_candidate = candidates[0]
+        content = first_candidate.get("content", {})
+        message_content = ""
+        if content.get("role") == "model" and content.get("parts"):
+            # Concatenate text from all parts (usually just one)
+            message_content = "".join(part.get("text", "") for part in content["parts"] if "text" in part)
+
+        # Map finish reason
+        finish_reason_map = {
+            "STOP": "stop",
+            "MAX_TOKENS": "length",
+            "SAFETY": "content_filter", # OpenAI uses 'content_filter'
+            "RECITATION": "stop", # Or maybe a custom reason? Mapping to 'stop' for now.
+            "OTHER": "stop", # Generic stop
+            "FINISH_REASON_UNSPECIFIED": None, # Map unspecified to None
+        }
+        gemini_finish_reason = first_candidate.get("finishReason")
+        finish_reason = finish_reason_map.get(gemini_finish_reason, None) # Default to None if unknown/unspecified
+
+        # Map usage
+        prompt_tokens = usage_metadata.get("promptTokenCount", 0)
+        completion_tokens = usage_metadata.get("candidatesTokenCount", 0) # Sum across candidates if needed
+        total_tokens = usage_metadata.get("totalTokenCount", prompt_tokens + completion_tokens) # Use total if available
+
+        # Construct OpenAI Response
+        openai_response = {
+            "id": f"chatcmpl-gemini-{int(time.time())}", # Generate an ID
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": requested_model_id, # Use the model ID requested by the client
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant", # Gemini response is always 'model' role
+                        "content": message_content,
+                    },
+                    "finish_reason": finish_reason,
+                    "logprobs": None, # Gemini API doesn't provide logprobs here
+                }
+            ],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+            },
+            "system_fingerprint": None, # Gemini doesn't provide this
+        }
+        logger.debug("Successfully transformed Gemini response to OpenAI format.")
+        return openai_response
+
+    except Exception as e:
+        logger.exception(f"Error transforming Gemini non-streaming response: {e}. Original data: {gemini_data}")
+        return {
+            "error": {
+                "message": f"Error transforming response from Gemini backend: {e}",
+                "type": "proxy_error", "code": "transformation_error"
+            }
+        }
+
+
+def transform_gemini_stream_chunk_to_openai(
+    gemini_chunk: Dict[str, Any], chunk_id: str, model_id: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Transforms a Gemini SSE chunk (parsed JSON object) into an OpenAI
+    Chat Completion Chunk dictionary. Returns None if the chunk doesn't map.
+    """
+    # Gemini chunk structure is similar to the full response but incremental:
+    # { "candidates": [ { "content": { "role": "model", "parts": [ { "text": "..." } ] }, "finishReason": ..., "index": 0 } ], "usageMetadata": { ... } }
+    # Sometimes only delta is present in candidates[0].content.parts[0].text
+    logger.debug(f"Transforming Gemini chunk: {gemini_chunk}")
+    openai_chunk = {
+        "id": chunk_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_id,
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": None,
+            "logprobs": None,
+        }],
+        "usage": None, # Usage might appear in the last chunk's usageMetadata
+        "system_fingerprint": None,
+    }
+
+    try:
+        candidates = gemini_chunk.get("candidates", [])
+        if not candidates:
+            # Sometimes Gemini sends empty chunks or just usage metadata
+            # Check for usage metadata in the chunk itself
+            usage_metadata = gemini_chunk.get("usageMetadata")
+            if usage_metadata:
+                 # This might be the final chunk containing usage. OpenAI spec is a bit ambiguous
+                 # on whether usage should be in the *last* delta chunk or a separate final message.
+                 # Let's try adding it to the last chunk with a finish_reason if possible,
+                 # but for now, we'll ignore usage updates in streaming chunks.
+                 logger.debug(f"Gemini chunk contains usageMetadata: {usage_metadata}. Ignoring for now in streaming.")
+                 return None # Don't send a chunk just for usage metadata yet.
+            else:
+                 logger.warning("Received Gemini chunk without candidates or usage metadata.")
+                 return None # Skip empty or unrecognized chunks
+
+
+        first_candidate = candidates[0]
+        delta_content = ""
+        delta_role = None # Role usually appears only once at the start
+
+        # Extract content delta
+        content = first_candidate.get("content", {})
+        if content.get("role") == "model":
+            delta_role = "assistant" # Map role if present
+        if content.get("parts"):
+            delta_content = "".join(part.get("text", "") for part in content["parts"] if "text" in part)
+
+        # Populate delta
+        if delta_role and delta_content: # First chunk might have both role and content
+             openai_chunk["choices"][0]["delta"] = {"role": delta_role, "content": delta_content}
+        elif delta_role: # First chunk might only have role
+             openai_chunk["choices"][0]["delta"] = {"role": delta_role}
+        elif delta_content: # Subsequent chunks usually only have content
+             openai_chunk["choices"][0]["delta"] = {"content": delta_content}
+        else:
+             # If no role or content delta, check for finish reason
+             pass # Continue to check finish reason
+
+        # Extract finish reason
+        gemini_finish_reason = first_candidate.get("finishReason")
+        if gemini_finish_reason and gemini_finish_reason != "FINISH_REASON_UNSPECIFIED":
+            finish_reason_map = {
+                "STOP": "stop",
+                "MAX_TOKENS": "length",
+                "SAFETY": "content_filter",
+                "RECITATION": "stop",
+                "OTHER": "stop",
+            }
+            finish_reason = finish_reason_map.get(gemini_finish_reason)
+            openai_chunk["choices"][0]["finish_reason"] = finish_reason
+            # Ensure delta is empty if only finish_reason is present in this chunk
+            if not delta_content and not delta_role:
+                 openai_chunk["choices"][0]["delta"] = {}
+
+
+        # Only return the chunk if it contains a delta or a finish reason
+        if openai_chunk["choices"][0]["delta"] or openai_chunk["choices"][0]["finish_reason"] is not None:
+            # Avoid sending delta: {} if only finish_reason is set
+            if not openai_chunk["choices"][0]["delta"] and openai_chunk["choices"][0]["finish_reason"] is not None:
+                 openai_chunk["choices"][0]["delta"] = {} # Ensure delta field exists but is empty
+            elif not openai_chunk["choices"][0]["delta"]: # Should not happen if finish_reason is None, but safety check
+                 return None
+
+            return openai_chunk
+        else:
+            logger.debug("Skipping Gemini chunk transformation as it resulted in no delta or finish reason.")
+            return None # Skip chunk if it resulted in no meaningful update
+
+    except Exception as e:
+        logger.exception(f"Error transforming Gemini stream chunk: {e}. Chunk: {gemini_chunk}")
         return None # Skip chunk on error
 
 
