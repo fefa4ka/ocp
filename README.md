@@ -68,6 +68,7 @@ The proxy requires configuration, primarily the URL for the model list and poten
     *   Models list: `http://localhost:8000/v1/models`
     *   API Docs (Swagger UI): `http://localhost:8000/docs`
     *   Health Check: `http://localhost:8000/health`
+    *   Chat Completions: `http://localhost:8000/v1/chat/completions` (POST)
 
 ## API Endpoints
 
