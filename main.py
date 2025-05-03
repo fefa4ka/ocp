@@ -191,53 +191,56 @@ async def chat_completions(request: Request):
         is_streaming = request_data.get("stream", False)
         logger.info(f"Forwarding request for model '{model_id}' to {target_url}. Streaming: {is_streaming}")
 
-        async with httpx.AsyncClient() as client:
-            try:
-                if is_streaming:
-                    # Define an async generator to stream the response chunks
-                    async def stream_generator() -> AsyncGenerator[bytes, None]:
-                        try:
-                            async with client.stream(
-                                "POST",
-                                target_url,
-                                json=request_data,
-                                headers=headers_to_forward,
-                                timeout=180.0
-                            ) as backend_response:
-                                # Check for backend errors *before* streaming body
-                                if backend_response.status_code >= 400:
-                                    error_body = await backend_response.aread()
-                                    error_detail = error_body.decode() or f"Backend error {backend_response.status_code}"
-                                    logger.error(f"Backend streaming request failed with status {backend_response.status_code}: {error_detail}")
-                                    # Raising here will likely result in a non-stream error response to the client
-                                    raise HTTPException(
-                                        status_code=backend_response.status_code,
-                                        detail=error_detail
-                                    )
+        # Define the stream generator here, accepting necessary parameters
+        async def stream_generator(req_url: str, req_data: dict, req_headers: dict) -> AsyncGenerator[bytes, None]:
+            # Create the client *inside* the generator to manage its lifecycle correctly
+            async with httpx.AsyncClient() as stream_client:
+                try:
+                    async with stream_client.stream(
+                        "POST",
+                        req_url,
+                        json=req_data,
+                        headers=req_headers,
+                        timeout=180.0
+                    ) as backend_response:
+                        # Check for backend errors *before* streaming body
+                        if backend_response.status_code >= 400:
+                            error_body = await backend_response.aread()
+                            error_detail = error_body.decode() or f"Backend error {backend_response.status_code}"
+                            logger.error(f"Backend streaming request failed with status {backend_response.status_code}: {error_detail}")
+                            # Raising here will be caught by Starlette's error handling for streaming responses
+                            raise HTTPException(
+                                status_code=backend_response.status_code,
+                                detail=error_detail
+                            )
 
-                                # Stream the response body chunk by chunk
-                                async for chunk in backend_response.aiter_bytes():
-                                    yield chunk
-                            logger.info(f"Finished streaming response from backend for model '{model_id}'")
-                        except Exception as e:
-                            # Log errors occurring during the streaming process itself
-                            logger.error(f"Error during backend stream processing for model {model_id}: {e}")
-                            # Re-raise to signal an internal server error during streaming
-                            raise
+                        # Stream the response body chunk by chunk
+                        async for chunk in backend_response.aiter_bytes():
+                            yield chunk
+                    logger.info(f"Finished streaming response from backend for model '{model_id}'")
+                except Exception as e:
+                    # Log errors occurring during the streaming process itself
+                    logger.error(f"Error during backend stream processing for model {model_id}: {e}")
+                    # Re-raise to signal an internal server error during streaming
+                    # This will likely terminate the stream prematurely for the client.
+                    raise
 
-                    # Return a StreamingResponse using the generator
-                    # OpenAI standard content type for streaming is text/event-stream
-                    return StreamingResponse(stream_generator(), media_type="text/event-stream")
+        # Now, handle the request based on streaming flag
+        try:
+            if is_streaming:
+                # Create the generator instance, passing the required arguments
+                generator = stream_generator(target_url, request_data, headers_to_forward)
+                # Return a StreamingResponse using the generator
+                # OpenAI standard content type for streaming is text/event-stream
+                return StreamingResponse(generator, media_type="text/event-stream")
 
-                else: # Non-streaming request
+            else: # Non-streaming request
+                # Use a separate client instance for non-streaming requests
+                async with httpx.AsyncClient() as client:
                     backend_response = await client.post(
                         target_url,
                         json=request_data, # Forward the original request body
-                        headers=headers_to_forward,
-                        timeout=180.0 # Set a reasonable timeout for LLM requests
-                    )
-
-                    # Raise exception for 4xx/5xx responses from the backend
+                                headers=headers_to_forward,
                     backend_response.raise_for_status()
 
                     # Return the raw JSON response from the backend
