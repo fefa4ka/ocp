@@ -268,10 +268,6 @@ async def chat_completions(request: Request):
                     ) as backend_response:
                         # Check for backend errors *before* streaming body
                         if backend_response.status_code >= 400:
-                        "POST", req_url, json=req_data, headers=req_headers, timeout=180.0
-                    ) as backend_response:
-                        # Check for backend errors *before* streaming body
-                        if backend_response.status_code >= 400:
                             error_body = await backend_response.aread()
                             error_detail = error_body.decode() or f"Backend error {backend_response.status_code}"
                             logger.error(f"Backend streaming request failed with status {backend_response.status_code}: {error_detail}")
