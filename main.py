@@ -223,9 +223,9 @@ async def chat_completions(request: Request):
         # Determine streaming based on original request, as 'stream' is removed for Gemini
         is_streaming = request_data.get("stream", False)
         if "/gemini/" in handle.lower():
-             # Check original request data for Gemini, as 'stream' field is removed during transformation
-             original_req_data_for_stream_check = await request.json() # Re-read original data to check stream flag
-             is_streaming = original_req_data_for_stream_check.get("stream", False)
+             # Check the *original* request data copy for the stream flag,
+             # as 'stream' is removed during transformation for the actual payload.
+             is_streaming = original_request_data.get("stream", False)
 
 
         logger.info(f"Forwarding request for model '{model_id}' to {target_url}. Streaming: {is_streaming}")
