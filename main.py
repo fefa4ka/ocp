@@ -266,6 +266,7 @@ async def chat_completions(request: Request):
                     # Return the raw JSON response from the backend
                     response_data = backend_response.json()
                     logger.info(f"Successfully received non-streaming response from backend for model '{model_id}'")
+                    logger.debug(f"Backend response data for model '{model_id}': {response_data}") # Log the response content
                     # Return backend's status code and content directly
                     return JSONResponse(content=response_data, status_code=backend_response.status_code)
 
