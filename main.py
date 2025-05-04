@@ -200,6 +200,10 @@ async def images_generations(request: Request):
                 status_code=400, 
                 detail=f"Model '{model_id}' with family '{model_family}' is not supported for image generation"
             )
+            
+        # Log detailed model information
+        logger.debug(f"Model details - ID: {model_id}, Family: {model_family}, Handle: {handle}")
+        logger.debug(f"Full model object: {target_model.model_dump()}")
 
         # --- Determine the target backend URL ---
         try:
@@ -233,7 +237,19 @@ async def images_generations(request: Request):
             payload_for_backend = transform_openai_request_to_ideogram(payload_for_backend)
         elif model_family == "recraft":
             payload_for_backend = transform_openai_request_to_recraft(payload_for_backend)
-        # dall-e-3 uses OpenAI format, so no transformation needed
+        elif model_family == "dall-e-3":
+            # For dall-e-3, we need to ensure the model parameter is correct
+            # The error shows the backend expects 'dall-e-3', 'dall-e-2', or 'gpt-image-1'
+            original_model = payload_for_backend.get("model", "")
+            logger.debug(f"Original model parameter: {original_model}")
+            
+            # Extract the base model name without parameters
+            if ":" in original_model:
+                base_model = original_model.split(":")[0]
+                logger.debug(f"Extracted base model: {base_model}")
+                payload_for_backend["model"] = base_model
+            
+            logger.debug(f"Adjusted model parameter for dall-e-3 family: {payload_for_backend.get('model')}")
 
         logger.debug(f"Transformed payload for {model_family}: {payload_for_backend}")
 
@@ -255,6 +271,16 @@ async def images_generations(request: Request):
             response_data = backend_response.json()
             logger.info(f"Successfully received response from backend for model '{model_id}'")
             logger.debug(f"Backend response data for model '{model_id}': {response_data}")
+            
+            # Log additional details about the response
+            if "data" in response_data:
+                logger.info(f"Generated {len(response_data['data'])} images")
+                for i, img_data in enumerate(response_data["data"]):
+                    if "url" in img_data:
+                        logger.info(f"Image {i+1} URL available: {img_data['url'][:30]}...")
+                    elif "b64_json" in img_data:
+                        b64_length = len(img_data["b64_json"]) if img_data["b64_json"] else 0
+                        logger.info(f"Image {i+1} base64 data available: {b64_length} bytes")
 
             # --- Transform response if needed ---
             final_response_data = response_data
@@ -286,6 +312,28 @@ async def images_generations(request: Request):
         return JSONResponse(content=error_response, status_code=503)
     except httpx.HTTPStatusError as e:
         logger.error(f"Backend service returned error {e.response.status_code}: {e.response.text}")
+        
+        # Try to parse and log the error response in more detail
+        try:
+            error_json = e.response.json()
+            logger.error(f"Parsed error response: {error_json}")
+            
+            # Extract and log specific error details if available
+            if isinstance(error_json, dict):
+                if "error" in error_json:
+                    error_details = error_json["error"]
+                    logger.error(f"Error type: {error_details.get('type')}")
+                    logger.error(f"Error message: {error_details.get('message')}")
+                    logger.error(f"Error param: {error_details.get('param')}")
+                    logger.error(f"Error code: {error_details.get('code')}")
+                elif "response" in error_json and "error" in error_json.get("response", {}):
+                    error_details = error_json["response"]["error"]
+                    logger.error(f"Error type: {error_details.get('type')}")
+                    logger.error(f"Error message: {error_details.get('message')}")
+                    logger.error(f"Error param: {error_details.get('param')}")
+                    logger.error(f"Error code: {error_details.get('code')}")
+        except Exception as parse_error:
+            logger.error(f"Failed to parse error response: {parse_error}")
         try:
             error_content = e.response.json()
             if "error" in error_content and isinstance(error_content["error"], dict):
