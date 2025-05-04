@@ -1647,10 +1647,79 @@ def transform_cohere_stream_chunk_to_openai(
         # Log the full chunk structure for debugging
         logger.debug(f"Cohere stream chunk structure: {json.dumps(cohere_chunk, default=str)}")
 
-        # Check for event type
+        # Check for event type (older format)
         event_type = cohere_chunk.get("event_type")
+        
+        # Check for type (newer format)
+        chunk_type = cohere_chunk.get("type")
 
-        if event_type == "stream-start":
+        # Handle newer Cohere streaming format
+        if chunk_type == "message-start":
+            # First chunk - send role
+            openai_chunk["choices"][0]["delta"] = {"role": "assistant"}
+            return openai_chunk
+            
+        elif chunk_type == "content-delta":
+            # Content chunk in newer format
+            # Extract text from the nested structure
+            text = ""
+            if "delta" in cohere_chunk and "message" in cohere_chunk["delta"]:
+                message = cohere_chunk["delta"]["message"]
+                if "content" in message:
+                    content = message["content"]
+                    if isinstance(content, dict) and "text" in content:
+                        text = content["text"]
+            
+            if text:
+                # Filter code block markers if present
+                if "```" in text:
+                    text = text.replace("```json", "").replace("```", "")
+                
+                openai_chunk["choices"][0]["delta"] = {"content": text}
+                return openai_chunk
+            else:
+                return None  # Skip empty content
+                
+        elif chunk_type == "message-end":
+            # Final chunk with finish reason
+            finish_reason_map = {
+                "COMPLETE": "stop",
+                "MAX_TOKENS": "length",
+                "ERROR": "error",
+                "CANCELLED": "stop",
+                "SAFETY": "content_filter"
+            }
+            
+            finish_reason = None
+            usage_data = None
+            
+            if "delta" in cohere_chunk:
+                delta = cohere_chunk["delta"]
+                finish_reason = delta.get("finish_reason")
+                usage_data = delta.get("usage")
+            
+            if finish_reason:
+                mapped_reason = finish_reason_map.get(finish_reason, "stop")
+                openai_chunk["choices"][0]["delta"] = {}
+                openai_chunk["choices"][0]["finish_reason"] = mapped_reason
+                
+                # Add usage if available
+                if usage_data:
+                    openai_chunk["usage"] = {
+                        "prompt_tokens": usage_data.get("tokens", {}).get("input_tokens", 0),
+                        "completion_tokens": usage_data.get("tokens", {}).get("output_tokens", 0),
+                        "total_tokens": (
+                            usage_data.get("tokens", {}).get("input_tokens", 0) + 
+                            usage_data.get("tokens", {}).get("output_tokens", 0)
+                        )
+                    }
+                
+                return openai_chunk
+            else:
+                return None
+                
+        # Handle older Cohere streaming format
+        elif event_type == "stream-start":
             # First chunk - send role
             openai_chunk["choices"][0]["delta"] = {"role": "assistant"}
             return openai_chunk
@@ -1660,8 +1729,6 @@ def transform_cohere_stream_chunk_to_openai(
             text = cohere_chunk.get("text", "")
             if text:
                 # Check if this chunk contains markdown code block markers
-                # For streaming, we'll just filter out the markers rather than trying to
-                # extract content (which would require buffering multiple chunks)
                 if "```" in text:
                     # Replace code block markers with empty string
                     text = text.replace("```json", "").replace("```", "")
@@ -1697,7 +1764,7 @@ def transform_cohere_stream_chunk_to_openai(
 
             return openai_chunk
 
-        # Handle Cohere's specific streaming format
+        # Handle other Cohere formats
         elif "is_finished" in cohere_chunk:
             if cohere_chunk.get("is_finished", False):
                 # This is the final chunk
@@ -1732,7 +1799,7 @@ def transform_cohere_stream_chunk_to_openai(
                 return None
 
         # Handle Cohere's streaming response format
-        elif "type" in cohere_chunk and cohere_chunk.get("type") == "text":
+        elif chunk_type == "text":
             # Extract text from the text field
             text = cohere_chunk.get("text", "")
             if text:
