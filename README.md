@@ -201,7 +201,7 @@ The proxy expects the model list fetched from `MODEL_LIST_URL` to be a JSON obje
 *   Authentication handling (passing API keys to backends).
 *   Request/Response transformation for non-compatible backends.
 *   Authentication handling (passing API keys to backends, currently only supports forwarding the MODEL_LIST_AUTH_TOKEN).
-*   Request/Response transformation for non-compatible backends (currently assumes backend is OpenAI compatible).
+*   Request/Response transformation for non-compatible backends (currently supports OpenAI, Anthropic, Gemini, and Cohere).
 *   More sophisticated routing strategies (e.g., based on model family AND handle, allowing different base URLs for different providers even if served from the same model list endpoint).
 *   Load balancing.
 *   Support for other OpenAI endpoints (e.g., Embeddings).
@@ -216,6 +216,7 @@ Accepts standard OpenAI image generation requests. It looks up the requested `mo
 * `dall-e-3`: OpenAI's DALL-E 3 image generation models
 * `ideogram`: Ideogram AI image generation models
 * `recraft`: Recraft AI image generation models
+* `cohere`: Cohere's Command and Command-R models
 
 **Example Request:**
 
