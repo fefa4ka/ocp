@@ -1562,6 +1562,23 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
             total_tokens = prompt_tokens + completion_tokens
             logger.debug(f"Extracted token counts - prompt: {prompt_tokens}, completion: {completion_tokens}, total: {total_tokens}")
 
+        # Process the text content to extract from code blocks if needed
+        # This handles cases where Cohere returns markdown code blocks
+        if cohere_text and "```" in cohere_text:
+            # Check for JSON code blocks specifically
+            import re
+            json_block_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', cohere_text, re.DOTALL)
+            if json_block_match:
+                # Extract the content inside the code block
+                extracted_content = json_block_match.group(1).strip()
+                logger.debug(f"Extracted content from code block: {extracted_content}")
+                cohere_text = extracted_content
+            else:
+                # For other code blocks, just remove the markdown formatting
+                cohere_text = re.sub(r'```.*?\n', '', cohere_text)
+                cohere_text = cohere_text.replace('```', '')
+                logger.debug(f"Removed code block formatting: {cohere_text}")
+
         # Construct OpenAI response
         openai_response = {
             "id": f"chatcmpl-{cohere_id}",
@@ -1642,6 +1659,14 @@ def transform_cohere_stream_chunk_to_openai(
             # Content chunk
             text = cohere_chunk.get("text", "")
             if text:
+                # Check if this chunk contains markdown code block markers
+                # For streaming, we'll just filter out the markers rather than trying to
+                # extract content (which would require buffering multiple chunks)
+                if "```" in text:
+                    # Replace code block markers with empty string
+                    text = text.replace("```json", "").replace("```", "")
+                    logger.debug(f"Removed code block markers from stream chunk: {text}")
+                
                 openai_chunk["choices"][0]["delta"] = {"content": text}
                 return openai_chunk
             else:
@@ -1684,6 +1709,10 @@ def transform_cohere_stream_chunk_to_openai(
                 # This is a content chunk
                 text = cohere_chunk.get("text", "")
                 if text:
+                    # Filter code block markers
+                    if "```" in text:
+                        text = text.replace("```json", "").replace("```", "")
+                    
                     openai_chunk["choices"][0]["delta"] = {"content": text}
                     return openai_chunk
                 else:
@@ -1693,6 +1722,10 @@ def transform_cohere_stream_chunk_to_openai(
         elif "generation" in cohere_chunk:
             generation = cohere_chunk.get("generation", "")
             if generation:
+                # Filter code block markers
+                if "```" in generation:
+                    generation = generation.replace("```json", "").replace("```", "")
+                
                 openai_chunk["choices"][0]["delta"] = {"content": generation}
                 return openai_chunk
             else:
@@ -1703,6 +1736,10 @@ def transform_cohere_stream_chunk_to_openai(
             # Extract text from the text field
             text = cohere_chunk.get("text", "")
             if text:
+                # Filter code block markers
+                if "```" in text:
+                    text = text.replace("```json", "").replace("```", "")
+                
                 openai_chunk["choices"][0]["delta"] = {"content": text}
                 return openai_chunk
             else:
@@ -1714,6 +1751,11 @@ def transform_cohere_stream_chunk_to_openai(
             for key, value in cohere_chunk.items():
                 if isinstance(value, str) and len(value) > 0 and key not in ["event_type", "finish_reason", "type"]:
                     logger.debug(f"Found potential text content in field '{key}': {value}")
+                    
+                    # Filter code block markers if present
+                    if "```" in value:
+                        value = value.replace("```json", "").replace("```", "")
+                    
                     openai_chunk["choices"][0]["delta"] = {"content": value}
                     return openai_chunk
 
