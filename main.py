@@ -1392,9 +1392,9 @@ def transform_openai_request_to_cohere(openai_data: Dict[str, Any]) -> Dict[str,
     logger.debug("Transforming OpenAI request to Cohere format.")
     
     # Initialize Cohere request structure with the correct fields
+    # According to Cohere API docs, the main field is "message" not "query"
     cohere_request = {
-        "query": "",
-        "chat_history": [],
+        "message": "",
         "model": openai_data.get("model", "command-r")
     }
     
@@ -1440,7 +1440,7 @@ def transform_openai_request_to_cohere(openai_data: Dict[str, Any]) -> Dict[str,
             break
     
     if last_user_msg:
-        cohere_request["query"] = last_user_msg  # Use "query" instead of "message"
+        cohere_request["message"] = last_user_msg  # Use "message" as the main field
     
     # Add chat history if not empty
     if chat_history:
@@ -1485,8 +1485,26 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
         
         # Extract response components
         cohere_id = cohere_response.get("id", f"cohere-id-{int(time.time())}")
-        cohere_text = cohere_response.get("text", "")  # Cohere returns text directly
-        cohere_generation_id = cohere_response.get("generation_id", "")
+        
+        # Get the text content from the response
+        # Cohere might return text in different formats depending on the API version
+        cohere_text = ""
+        if "text" in cohere_response:
+            cohere_text = cohere_response.get("text", "")
+        elif "message" in cohere_response:
+            # Handle newer Cohere API format where content is in message.text
+            message = cohere_response.get("message", {})
+            if isinstance(message, dict):
+                if "text" in message:
+                    cohere_text = message.get("text", "")
+                elif "content" in message:
+                    # Handle content array format
+                    content = message.get("content", [])
+                    if isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                cohere_text += item.get("text", "")
+        
         cohere_finish_reason = cohere_response.get("finish_reason")
         
         # Extract usage information
@@ -1516,11 +1534,15 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
                 prompt_tokens = cohere_usage.get("input_tokens", 0)
             elif "tokens" in cohere_usage and "input_tokens" in cohere_usage.get("tokens", {}):
                 prompt_tokens = cohere_usage.get("tokens", {}).get("input_tokens", 0)
+            elif "billed_units" in cohere_usage and "input_tokens" in cohere_usage.get("billed_units", {}):
+                prompt_tokens = cohere_usage.get("billed_units", {}).get("input_tokens", 0)
             
             if "output_tokens" in cohere_usage:
                 completion_tokens = cohere_usage.get("output_tokens", 0)
             elif "tokens" in cohere_usage and "output_tokens" in cohere_usage.get("tokens", {}):
                 completion_tokens = cohere_usage.get("tokens", {}).get("output_tokens", 0)
+            elif "billed_units" in cohere_usage and "output_tokens" in cohere_usage.get("billed_units", {}):
+                completion_tokens = cohere_usage.get("billed_units", {}).get("output_tokens", 0)
             
             total_tokens = prompt_tokens + completion_tokens
         
@@ -1647,6 +1669,15 @@ def transform_cohere_stream_chunk_to_openai(
                     return openai_chunk
                 else:
                     return None
+                    
+        # Handle generation chunk format
+        elif "generation" in cohere_chunk:
+            generation = cohere_chunk.get("generation", "")
+            if generation:
+                openai_chunk["choices"][0]["delta"] = {"content": generation}
+                return openai_chunk
+            else:
+                return None
             
         else:
             # Unknown event type
