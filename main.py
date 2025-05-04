@@ -79,7 +79,15 @@ async def fetch_and_cache_models():
             # Validate data using Pydantic, expecting {"models": [...]}
             validated_source_list = SourceModelList.model_validate(source_data)
 
-            model_cache = validated_source_list.models
+            # Filter out models with handle "unavailable"
+            filtered_models = [model for model in validated_source_list.models if model.handle != "unavailable"]
+            
+            # Log how many models were filtered out
+            filtered_count = len(validated_source_list.models) - len(filtered_models)
+            if filtered_count > 0:
+                logger.info(f"Filtered out {filtered_count} unavailable models.")
+            
+            model_cache = filtered_models
             model_map = {model.model_version: model for model in model_cache}
             logger.info(f"Successfully fetched and cached {len(model_cache)} models.")
 
