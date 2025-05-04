@@ -221,14 +221,25 @@ async def chat_completions(request: Request):
             # This replaces the variable with the transformed dictionary
             payload_for_backend = transform_openai_request_to_gemini(payload_for_backend)
             logger.debug(f"Google/Gemini payload for backend after transformation for model '{model_id}': {payload_for_backend}")
-            # Adjust target_url for streaming if needed
+            # Adjust target_url for Gemini streaming
             if is_streaming: # Use the flag determined from original request
-                 if "?" in target_url:
-                     target_url += "&alt=sse"
-                 else:
-                     target_url += "?alt=sse"
-                 logger.info(f"Using Gemini streaming endpoint: {target_url}")
-            # Note: Non-streaming Gemini requests do not need ?alt=sse
+                if target_url.endswith(":generateContent"):
+                    # Replace non-streaming endpoint with streaming endpoint
+                    target_url = target_url.replace(":generateContent", ":streamGenerateContent")
+                    logger.info(f"Using Gemini streaming endpoint (replaced): {target_url}")
+                elif ":streamGenerateContent" not in target_url:
+                    # If it's not the standard non-streaming endpoint, try appending ?alt=sse as a fallback
+                    logger.warning(f"Gemini handle '{handle}' does not end with ':generateContent'. Appending '?alt=sse' as fallback for streaming.")
+                    if "?" in target_url:
+                        target_url += "&alt=sse"
+                    else:
+                        target_url += "?alt=sse"
+                    logger.info(f"Using Gemini streaming endpoint (fallback): {target_url}")
+                else:
+                     # Handle already points to a streaming endpoint
+                     logger.info(f"Using Gemini streaming endpoint (pre-defined): {target_url}")
+
+            # Note: Non-streaming Gemini requests use the original handle (e.g., :generateContent)
 
 
         # --- Forward the request ---
