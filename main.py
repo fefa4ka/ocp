@@ -1323,23 +1323,22 @@ def transform_openai_request_to_ideogram(openai_data: Dict[str, Any]) -> Dict[st
     # Create the inner request object
     inner_request = {
         "prompt": openai_data.get("prompt", ""),
-        "aspect_ratio": "1:1",  # Default to square
+        "aspect_ratio": "ASPECT_1_1",  # Default to square using correct format
         "style": "natural",  # Default style
     }
 
-    # Map size to aspect_ratio
+    # Map size to aspect_ratio using the correct format expected by Ideogram API
     size = openai_data.get("size", "1024x1024")
     if size == "1024x1024":
-        inner_request["aspect_ratio"] = "1:1"
+        inner_request["aspect_ratio"] = "ASPECT_1_1"
     elif size == "1792x1024":
-        inner_request["aspect_ratio"] = "16:9"
+        inner_request["aspect_ratio"] = "ASPECT_16_9"
     elif size == "1024x1792":
-        inner_request["aspect_ratio"] = "9:16"
+        inner_request["aspect_ratio"] = "ASPECT_9_16"
     elif size == "512x512":
-        inner_request["aspect_ratio"] = "1:1"
-        # Some APIs might need specific size values
-        inner_request["width"] = 512
-        inner_request["height"] = 512
+        inner_request["aspect_ratio"] = "ASPECT_1_1"
+        # Remove width and height as they might not be needed with aspect_ratio
+        # and could potentially conflict
 
     # Map style if provided
     if "style" in openai_data:
