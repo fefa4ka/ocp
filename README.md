@@ -207,3 +207,40 @@ The proxy expects the model list fetched from `MODEL_LIST_URL` to be a JSON obje
 *   Support for other OpenAI endpoints (e.g., Embeddings).
 *   Detailed logging and monitoring.
 *   Periodic refresh of the model list (currently only fetches on startup).
+
+### `POST /v1/images/generations`
+
+Accepts standard OpenAI image generation requests. It looks up the requested `model` in the list fetched from `MODEL_LIST_URL`, finds its associated `handle`, and proxies the request to the backend service.
+
+**Supported Model Families:**
+* `dall-e-3`: OpenAI's DALL-E 3 image generation models
+* `ideogram`: Ideogram AI image generation models
+* `recraft`: Recraft AI image generation models
+
+**Example Request:**
+
+```json
+{
+  "model": "dall-e-3",
+  "prompt": "A cute baby sea otter",
+  "n": 1,
+  "size": "1024x1024",
+  "quality": "standard",
+  "style": "vivid"
+}
+```
+
+**Example Response:**
+
+```json
+{
+  "created": 1684161139,
+  "data": [
+    {
+      "url": "https://example.com/images/generated-image.png"
+    }
+  ]
+}
+```
+
+The proxy handles the necessary transformations between the OpenAI API format and the specific formats required by different image generation backends.

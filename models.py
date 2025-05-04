@@ -1,7 +1,7 @@
 import time
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 
 
 # --- Source Model Definition ---
@@ -69,3 +69,30 @@ class OpenAIChatCompletionResponse(BaseModel):
      choices: List[Any] # Define a Choice model later if needed
      usage: Optional[Any] = None # Define a Usage model later if needed
      # Add other fields like system_fingerprint if needed
+
+
+# --- OpenAI Image Generation Definitions ---
+
+class OpenAIImageGenerationRequest(BaseModel):
+    """Represents the request body for OpenAI's /v1/images/generations."""
+    model: Optional[str] = Field(None, description="The model to use for image generation.")
+    prompt: str = Field(..., description="A text description of the desired image(s).")
+    n: Optional[int] = Field(1, description="The number of images to generate.")
+    size: Optional[str] = Field("1024x1024", description="The size of the generated images.")
+    quality: Optional[str] = Field("standard", description="The quality of the image generation.")
+    response_format: Optional[str] = Field("url", description="The format in which the generated images are returned.")
+    style: Optional[str] = Field("vivid", description="The style of the generated images.")
+    user: Optional[str] = Field(None, description="A unique identifier for the end-user.")
+
+
+class OpenAIImageData(BaseModel):
+    """Represents a single image in the OpenAI image generation response."""
+    url: Optional[HttpUrl] = Field(None, description="The URL of the generated image.")
+    b64_json: Optional[str] = Field(None, description="The base64-encoded JSON of the generated image.")
+    revised_prompt: Optional[str] = Field(None, description="The prompt that was used to generate the image, potentially revised from the original.")
+
+
+class OpenAIImageGenerationResponse(BaseModel):
+    """Represents the response body for OpenAI's /v1/images/generations."""
+    created: int = Field(default_factory=lambda: int(time.time()), description="The timestamp for when the image was created.")
+    data: List[OpenAIImageData] = Field(..., description="The list of generated images.")
