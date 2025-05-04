@@ -1391,9 +1391,9 @@ def transform_openai_request_to_cohere(openai_data: Dict[str, Any]) -> Dict[str,
     """Transforms an OpenAI Chat Completion request to a Cohere API request."""
     logger.debug("Transforming OpenAI request to Cohere format.")
     
-    # Initialize Cohere request structure
+    # Initialize Cohere request structure with the correct fields
     cohere_request = {
-        "message": "",
+        "query": "",
         "chat_history": [],
         "model": openai_data.get("model", "command-r")
     }
@@ -1422,7 +1422,7 @@ def transform_openai_request_to_cohere(openai_data: Dict[str, Any]) -> Dict[str,
         if role == "system":
             continue
             
-        # Map roles
+        # Map roles - Cohere uses "USER" and "CHATBOT" roles
         cohere_role = "USER" if role == "user" else "CHATBOT"
         
         # Add to chat history (except the last user message)
@@ -1440,7 +1440,7 @@ def transform_openai_request_to_cohere(openai_data: Dict[str, Any]) -> Dict[str,
             break
     
     if last_user_msg:
-        cohere_request["message"] = last_user_msg
+        cohere_request["query"] = last_user_msg  # Use "query" instead of "message"
     
     # Add chat history if not empty
     if chat_history:
@@ -1466,6 +1466,7 @@ def transform_openai_request_to_cohere(openai_data: Dict[str, Any]) -> Dict[str,
 def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_model_id: str) -> Dict[str, Any]:
     """Transforms a non-streaming Cohere API response to OpenAI Chat Completion format."""
     logger.debug(f"Transforming Cohere response for model {requested_model_id}")
+    logger.debug(f"Raw Cohere response data: {cohere_data}")
     
     try:
         # Extract the response data
@@ -1484,18 +1485,16 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
         
         # Extract response components
         cohere_id = cohere_response.get("id", f"cohere-id-{int(time.time())}")
-        cohere_message = cohere_response.get("message", {})
+        cohere_text = cohere_response.get("text", "")  # Cohere returns text directly
+        cohere_generation_id = cohere_response.get("generation_id", "")
         cohere_finish_reason = cohere_response.get("finish_reason")
-        cohere_usage = cohere_response.get("usage", {})
         
-        # Extract message content
-        message_content = ""
-        if cohere_message:
-            content_blocks = cohere_message.get("content", [])
-            if isinstance(content_blocks, list):
-                for block in content_blocks:
-                    if block.get("type") == "text":
-                        message_content += block.get("text", "")
+        # Extract usage information
+        cohere_usage = None
+        if "usage" in cohere_data:
+            cohere_usage = cohere_data.get("usage", {})
+        elif "usage" in cohere_response:
+            cohere_usage = cohere_response.get("usage", {})
         
         # Map finish reason
         finish_reason_map = {
@@ -1508,10 +1507,22 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
         finish_reason = finish_reason_map.get(cohere_finish_reason, "stop")
         
         # Map usage
-        billed_units = cohere_usage.get("billed_units", {})
-        prompt_tokens = billed_units.get("input_tokens", 0)
-        completion_tokens = billed_units.get("output_tokens", 0)
-        total_tokens = prompt_tokens + completion_tokens
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+        
+        if cohere_usage:
+            if "input_tokens" in cohere_usage:
+                prompt_tokens = cohere_usage.get("input_tokens", 0)
+            elif "tokens" in cohere_usage and "input_tokens" in cohere_usage.get("tokens", {}):
+                prompt_tokens = cohere_usage.get("tokens", {}).get("input_tokens", 0)
+            
+            if "output_tokens" in cohere_usage:
+                completion_tokens = cohere_usage.get("output_tokens", 0)
+            elif "tokens" in cohere_usage and "output_tokens" in cohere_usage.get("tokens", {}):
+                completion_tokens = cohere_usage.get("tokens", {}).get("output_tokens", 0)
+            
+            total_tokens = prompt_tokens + completion_tokens
         
         # Construct OpenAI response
         openai_response = {
@@ -1524,7 +1535,7 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
                     "index": 0,
                     "message": {
                         "role": "assistant",
-                        "content": message_content,
+                        "content": cohere_text,
                     },
                     "finish_reason": finish_reason,
                     "logprobs": None,
@@ -1612,18 +1623,34 @@ def transform_cohere_stream_chunk_to_openai(
             if "response" in cohere_chunk and "usage" in cohere_chunk["response"]:
                 usage = cohere_chunk["response"]["usage"]
                 if usage:
-                    billed_units = usage.get("billed_units", {})
                     openai_chunk["usage"] = {
-                        "prompt_tokens": billed_units.get("input_tokens", 0),
-                        "completion_tokens": billed_units.get("output_tokens", 0),
-                        "total_tokens": billed_units.get("input_tokens", 0) + billed_units.get("output_tokens", 0)
+                        "prompt_tokens": usage.get("input_tokens", 0),
+                        "completion_tokens": usage.get("output_tokens", 0),
+                        "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
                     }
             
             return openai_chunk
             
+        # Handle Cohere's specific streaming format
+        elif "is_finished" in cohere_chunk:
+            if cohere_chunk.get("is_finished", False):
+                # This is the final chunk
+                finish_reason = "stop"
+                openai_chunk["choices"][0]["delta"] = {}
+                openai_chunk["choices"][0]["finish_reason"] = finish_reason
+                return openai_chunk
+            else:
+                # This is a content chunk
+                text = cohere_chunk.get("text", "")
+                if text:
+                    openai_chunk["choices"][0]["delta"] = {"content": text}
+                    return openai_chunk
+                else:
+                    return None
+            
         else:
             # Unknown event type
-            logger.warning(f"Unknown Cohere stream event type: {event_type}")
+            logger.warning(f"Unknown Cohere stream chunk format: {cohere_chunk}")
             return None
             
     except Exception as e:
