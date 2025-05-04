@@ -440,7 +440,8 @@ async def chat_completions(request: Request):
 
             else: # Non-streaming request
                 # Use a separate client instance for non-streaming requests
-                logger.debug(f"Sending non-streaming payload to backend: {payload_for_backend}")
+                logger.info(f"Sending non-streaming request for model '{model_id}' to {target_url}")
+                logger.debug(f"Non-streaming payload for '{model_id}': {payload_for_backend}")
                 async with httpx.AsyncClient() as client:
                     backend_response = await client.post(
                         target_url,
