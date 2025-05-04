@@ -419,7 +419,7 @@ async def chat_completions(request: Request):
                             async for line in backend_response.aiter_lines():
                                 logger.debug(f"Raw backend SSE line: {line}")
                                 # Forward lines directly, adding the necessary SSE line endings
-                                yield chunk
+                                yield f"{line}\n" # Forward the line itself, adding newline for SSE
                             logger.info(f"Finished forwarding raw stream from backend for model '{requested_model}'")
 
                         # Send the final [DONE] message for all streams ONLY if not handled by backend
