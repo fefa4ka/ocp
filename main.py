@@ -267,13 +267,23 @@ async def chat_completions(request: Request):
                     # Example: if target_handle == "/gemini/v1beta/models/gemini-pro:streamGenerateContent":
                     #     request_method = "POST" # Or GET if required by specific Gemini endpoint
 
-                    # Log the actual data being sent for Gemini streaming requests
+                    # Log the actual data being sent for streaming requests
+                    log_payload = backend_payload # Use a consistent variable name
                     if is_gemini:
-                        logger.debug(f"Gemini stream request payload being sent to {req_url}: {backend_payload}")
+                        logger.info(f"Sending streaming request for Gemini model '{requested_model}' to {req_url}")
+                        logger.debug(f"Gemini stream request payload being sent to {req_url}: {log_payload}")
+                    elif is_anthropic:
+                         logger.info(f"Sending streaming request for Anthropic model '{requested_model}' to {req_url}")
+                         logger.debug(f"Anthropic stream request payload being sent to {req_url}: {log_payload}")
+                    else:
+                         logger.info(f"Sending streaming request for model '{requested_model}' to {req_url}")
+                         logger.debug(f"Stream request payload being sent to {req_url}: {log_payload}")
+
 
                     async with stream_client.stream(
-                        request_method, req_url, json=backend_payload, headers=req_headers, timeout=180.0
+                        request_method, req_url, json=log_payload, headers=req_headers, timeout=180.0
                     ) as backend_response:
++                       logger.info(f"Stream connection established for model '{requested_model}' to {req_url}. Status: {backend_response.status_code}")
                         # Check for backend errors *before* streaming body
                         if backend_response.status_code >= 400:
                             error_body = await backend_response.aread()
