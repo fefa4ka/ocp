@@ -1421,7 +1421,7 @@ def transform_recraft_response_to_openai(recraft_data: Dict[str, Any], model_id:
 
     # Use the created timestamp from the response if available
     created = recraft_data.get("response", {}).get("created", int(time.time()))
-    
+
     openai_response = {
         "created": created,
         "data": []
