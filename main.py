@@ -1320,7 +1320,8 @@ def transform_openai_request_to_ideogram(openai_data: Dict[str, Any]) -> Dict[st
     """Transforms an OpenAI Image Generation request to an Ideogram API request."""
     logger.debug("Transforming OpenAI request to Ideogram format.")
 
-    ideogram_request = {
+    # Create the inner request object
+    inner_request = {
         "prompt": openai_data.get("prompt", ""),
         "aspect_ratio": "1:1",  # Default to square
         "style": "natural",  # Default style
@@ -1329,23 +1330,37 @@ def transform_openai_request_to_ideogram(openai_data: Dict[str, Any]) -> Dict[st
     # Map size to aspect_ratio
     size = openai_data.get("size", "1024x1024")
     if size == "1024x1024":
-        ideogram_request["aspect_ratio"] = "1:1"
+        inner_request["aspect_ratio"] = "1:1"
     elif size == "1792x1024":
-        ideogram_request["aspect_ratio"] = "16:9"
+        inner_request["aspect_ratio"] = "16:9"
     elif size == "1024x1792":
-        ideogram_request["aspect_ratio"] = "9:16"
+        inner_request["aspect_ratio"] = "9:16"
+    elif size == "512x512":
+        inner_request["aspect_ratio"] = "1:1"
+        # Some APIs might need specific size values
+        inner_request["width"] = 512
+        inner_request["height"] = 512
 
     # Map style if provided
     if "style" in openai_data:
         openai_style = openai_data["style"]
         if openai_style == "vivid":
-            ideogram_request["style"] = "enhance"
+            inner_request["style"] = "enhance"
         elif openai_style == "natural":
-            ideogram_request["style"] = "natural"
+            inner_request["style"] = "natural"
 
     # Map number of images
     if "n" in openai_data:
-        ideogram_request["n"] = openai_data["n"]
+        inner_request["n"] = openai_data["n"]
+
+    # Map response format
+    if openai_data.get("response_format") == "b64_json":
+        inner_request["response_format"] = "b64_json"
+
+    # Wrap the request in the required 'image_request' property
+    ideogram_request = {
+        "image_request": inner_request
+    }
 
     logger.debug(f"Transformed Ideogram request: {ideogram_request}")
     return ideogram_request
@@ -1360,23 +1375,49 @@ def transform_ideogram_response_to_openai(ideogram_data: Dict[str, Any], model_i
         "data": []
     }
 
+    # The response might be nested under 'response' key
+    response_obj = ideogram_data.get("response", ideogram_data)
+    
     # Extract image URLs from Ideogram response
-    # Assuming Ideogram returns a list of image URLs in a field like 'images' or 'results'
-    images = ideogram_data.get("images", []) or ideogram_data.get("results", [])
+    # Check various possible locations for the image data
+    images = []
+    
+    # Try different possible paths to find the images
+    if "images" in response_obj:
+        images = response_obj["images"]
+    elif "results" in response_obj:
+        images = response_obj["results"]
+    elif "data" in response_obj and isinstance(response_obj["data"], list):
+        images = response_obj["data"]
+    # If response contains a direct image object
+    elif "url" in response_obj or "b64_json" in response_obj:
+        images = [response_obj]
+
+    logger.debug(f"Found images data: {images}")
 
     if isinstance(images, list):
         for image in images:
+            image_data = {}
+            
             # Handle different possible response formats
             if isinstance(image, str):
                 # If image is directly a URL string
-                image_url = image
+                image_data["url"] = image
             elif isinstance(image, dict):
-                # If image is an object with a URL field
-                image_url = image.get("url") or image.get("image_url") or image.get("path", "")
-            else:
-                continue
-
-            openai_response["data"].append({"url": image_url})
+                # If image is an object with URL or base64 data
+                if "url" in image:
+                    image_data["url"] = image["url"]
+                elif "image_url" in image:
+                    image_data["url"] = image["image_url"]
+                elif "path" in image:
+                    image_data["url"] = image["path"]
+                elif "b64_json" in image:
+                    image_data["b64_json"] = image["b64_json"]
+                elif "base64" in image:
+                    image_data["b64_json"] = image["base64"]
+            
+            if image_data:
+                openai_response["data"].append(image_data)
 
     logger.debug(f"Transformed OpenAI response: {openai_response}")
     return openai_response
