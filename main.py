@@ -79,16 +79,16 @@ async def fetch_and_cache_models():
             # Validate data using Pydantic, expecting {"models": [...]}
             validated_source_list = SourceModelList.model_validate(source_data)
 
-            # Filter out models with handle "unavailable" and image generation model families
+            # Filter out only models with handle "unavailable"
             filtered_models = [
                 model for model in validated_source_list.models
-                if model.handle != "unavailable" and model.model_family.lower() not in ["dall-e-3", "recraft", "ideogram"]
+                if model.handle != "unavailable"
             ]
 
             # Log how many models were filtered out
             filtered_count = len(validated_source_list.models) - len(filtered_models)
             if filtered_count > 0:
-                logger.info(f"Filtered out {filtered_count} unavailable and image generation models.")
+                logger.info(f"Filtered out {filtered_count} unavailable models.")
 
             model_cache = filtered_models
             model_map = {model.model_version: model for model in model_cache}
@@ -138,6 +138,11 @@ async def get_models():
 
     openai_models = []
     for model in model_cache:
+        # Skip image generation models in the /v1/models endpoint response
+        # but keep them in the cache for image generation requests
+        if model.model_family.lower() in ["dall-e-3", "recraft", "ideogram"]:
+            continue
+            
         # Determine 'owned_by' based on model_family or handle if desired
         owned_by = model.model_family # Simple example: use family name
         if "openai" in model.handle.lower():
