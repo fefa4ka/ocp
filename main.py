@@ -503,7 +503,7 @@ async def chat_completions(request: Request):
                     # Check for both /gemini/ and /google/ patterns for response transformation
                     elif "/gemini/" in handle.lower() or "/google/" in handle.lower():
                         logger.info(f"Transforming Gemini/Google response for model '{model_id}' to OpenAI format.")
-                        final_response_data = transform_gemini_response_to_openai(response_data, model_id)
+                        final_response_data = transform_gemini_response_to_openai(response_data.get('response', {}), model_id)
                         if "error" in final_response_data:
                              # Format as OpenAI-compatible error
                              error_message = final_response_data.get("error", {}).get("message", "Transformation error")
