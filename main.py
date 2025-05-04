@@ -1391,43 +1391,45 @@ def transform_openai_request_to_cohere(openai_data: Dict[str, Any]) -> Dict[str,
     """Transforms an OpenAI Chat Completion request to a Cohere API request."""
     logger.debug("Transforming OpenAI request to Cohere format.")
     
-    # Let's examine the error message more carefully
-    # "unknown field: parameter message is not a valid field"
-    # This suggests we need to use a different field structure
-    
-    # Initialize Cohere request structure
-    cohere_request = {}
+    # Initialize Cohere request structure with the correct fields
+    # Based on Cohere API documentation and testing
+    cohere_request = {
+        "messages": [],
+        "model": openai_data.get("model", "command-r")
+    }
     
     # Extract messages from OpenAI request
-    messages = openai_data.get("messages", [])
-    
-    # Get the last user message as the prompt
-    last_user_msg = None
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            last_user_msg = msg.get("content", "")
-            break
-    
-    if not last_user_msg:
-        logger.warning("No user message found in the request")
-        last_user_msg = ""
-    
-    # Set the prompt field - try different field names based on Cohere API versions
-    cohere_request["prompt"] = last_user_msg
-    
-    # Add model
-    cohere_request["model"] = openai_data.get("model", "command-r")
+    openai_messages = openai_data.get("messages", [])
     
     # Process system message if present
     system_prompt = None
-    for msg in messages:
+    for msg in openai_messages:
         if msg.get("role") == "system":
             system_prompt = msg.get("content", "")
             break
     
-    # Add system prompt if present
+    # Add system prompt as preamble if present
     if system_prompt:
-        cohere_request["system_prompt"] = system_prompt
+        cohere_request["preamble"] = system_prompt
+    
+    # Convert OpenAI messages to Cohere format
+    # Cohere expects an array of message objects with role and content
+    for msg in openai_messages:
+        role = msg.get("role")
+        content = msg.get("content", "")
+        
+        # Skip system messages (already handled via preamble)
+        if role == "system":
+            continue
+            
+        # Map roles - Cohere uses "USER" and "CHATBOT" (uppercase)
+        cohere_role = "USER" if role == "user" else "CHATBOT"
+        
+        # Add to messages array
+        cohere_request["messages"].append({
+            "role": cohere_role,
+            "content": content
+        })
     
     # Map other parameters
     if "temperature" in openai_data:
@@ -1442,31 +1444,7 @@ def transform_openai_request_to_cohere(openai_data: Dict[str, Any]) -> Dict[str,
     if "stream" in openai_data:
         cohere_request["stream"] = openai_data["stream"]
     
-    # Log the raw request for debugging
-    logger.debug(f"Raw Cohere request: {cohere_request}")
-    
-    # Try alternative format if needed
-    # Some Cohere API versions might use different field structures
-    alt_request = {
-        "prompt": last_user_msg,
-        "model": openai_data.get("model", "command-r"),
-    }
-    
-    if system_prompt:
-        alt_request["system_prompt"] = system_prompt
-    
-    if "temperature" in openai_data:
-        alt_request["temperature"] = openai_data["temperature"]
-    
-    if "max_tokens" in openai_data:
-        alt_request["max_tokens"] = openai_data["max_tokens"]
-    
-    if "stream" in openai_data:
-        alt_request["stream"] = openai_data["stream"]
-    
-    logger.debug(f"Alternative Cohere request format: {alt_request}")
-    
-    # Return the primary format
+    logger.debug(f"Transformed Cohere request: {cohere_request}")
     return cohere_request
 
 
@@ -1497,45 +1475,49 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
         cohere_id = cohere_response.get("id", f"cohere-id-{int(time.time())}")
         
         # Get the text content from the response
-        # Cohere might return text in different formats depending on the API version
+        # Cohere API returns a message object with content field
         cohere_text = ""
         
-        # Try different possible locations for the text content
-        if "text" in cohere_response:
-            cohere_text = cohere_response.get("text", "")
-            logger.debug(f"Found text directly in response: {cohere_text[:100]}...")
-        elif "generations" in cohere_response and isinstance(cohere_response["generations"], list):
-            # Some Cohere endpoints return a list of generations
-            generations = cohere_response["generations"]
-            if generations and "text" in generations[0]:
-                cohere_text = generations[0]["text"]
-                logger.debug(f"Found text in generations[0]: {cohere_text[:100]}...")
-        elif "message" in cohere_response:
-            # Handle newer Cohere API format where content is in message.text
+        # Try to extract text from the message field
+        if "message" in cohere_response:
             message = cohere_response.get("message", {})
             if isinstance(message, dict):
-                if "text" in message:
-                    cohere_text = message.get("text", "")
-                    logger.debug(f"Found text in message.text: {cohere_text[:100]}...")
-                elif "content" in message:
-                    # Handle content array format
-                    content = message.get("content", [])
-                    if isinstance(content, list):
+                # Check for content field which may be a string or an array
+                if "content" in message:
+                    content = message.get("content")
+                    if isinstance(content, str):
+                        cohere_text = content
+                        logger.debug(f"Found text in message.content (string): {cohere_text[:100]}...")
+                    elif isinstance(content, list):
+                        # Handle content array format
                         for item in content:
                             if isinstance(item, dict) and item.get("type") == "text":
                                 cohere_text += item.get("text", "")
                         logger.debug(f"Found text in message.content[].text: {cohere_text[:100]}...")
         
-        # If we still don't have text, try to extract it from any field that might contain it
+        # If we still don't have text, try other possible locations
+        if not cohere_text:
+            # Try text field directly in the response
+            if "text" in cohere_response:
+                cohere_text = cohere_response.get("text", "")
+                logger.debug(f"Found text directly in response: {cohere_text[:100]}...")
+            # Try generations array
+            elif "generations" in cohere_response and isinstance(cohere_response["generations"], list):
+                generations = cohere_response["generations"]
+                if generations and "text" in generations[0]:
+                    cohere_text = generations[0]["text"]
+                    logger.debug(f"Found text in generations[0]: {cohere_text[:100]}...")
+        
+        # If we still don't have text, search all fields as a last resort
         if not cohere_text:
             logger.warning("Could not find text in standard locations, searching all fields")
-            # Try to find any field that might contain the response text
             for key, value in cohere_response.items():
-                if isinstance(value, str) and len(value) > 10:  # Assume longer strings might be the content
+                if isinstance(value, str) and len(value) > 10:
                     cohere_text = value
                     logger.debug(f"Found potential text in field '{key}': {cohere_text[:100]}...")
                     break
         
+        # Extract finish reason
         cohere_finish_reason = cohere_response.get("finish_reason")
         
         # Extract usage information
@@ -1562,6 +1544,7 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
         
         if cohere_usage:
             logger.debug(f"Processing usage data: {cohere_usage}")
+            # Try different possible locations for token counts
             if "input_tokens" in cohere_usage:
                 prompt_tokens = cohere_usage.get("input_tokens", 0)
             elif "tokens" in cohere_usage and "input_tokens" in cohere_usage.get("tokens", {}):
@@ -1715,11 +1698,21 @@ def transform_cohere_stream_chunk_to_openai(
             else:
                 return None
                 
+        # Handle Cohere's streaming response format
+        elif "type" in cohere_chunk and cohere_chunk.get("type") == "text":
+            # Extract text from the text field
+            text = cohere_chunk.get("text", "")
+            if text:
+                openai_chunk["choices"][0]["delta"] = {"content": text}
+                return openai_chunk
+            else:
+                return None
+                
         # Try to extract text from any field that might contain it
         else:
             # Look for any field that might contain text content
             for key, value in cohere_chunk.items():
-                if isinstance(value, str) and len(value) > 0 and key not in ["event_type", "finish_reason"]:
+                if isinstance(value, str) and len(value) > 0 and key not in ["event_type", "finish_reason", "type"]:
                     logger.debug(f"Found potential text content in field '{key}': {value}")
                     openai_chunk["choices"][0]["delta"] = {"content": value}
                     return openai_chunk

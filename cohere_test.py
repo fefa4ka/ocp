@@ -29,23 +29,26 @@ cohere_url = "https://api.eliza.yandex.net/cohere/v2/chat"
 # Test different request formats
 test_formats = [
     {
-        "name": "Format 1: prompt",
+        "name": "Format 1: messages array",
         "payload": {
-            "prompt": "Hello, how are you?",
+            "messages": [
+                {"role": "USER", "content": "Hello, how are you?"}
+            ],
             "model": "command-r"
         }
     },
     {
-        "name": "Format 2: query",
+        "name": "Format 2: message object",
         "payload": {
-            "query": "Hello, how are you?",
+            "message": {"role": "USER", "content": "Hello, how are you?"},
             "model": "command-r"
         }
     },
     {
-        "name": "Format 3: text",
+        "name": "Format 3: chat_history",
         "payload": {
-            "text": "Hello, how are you?",
+            "message": "Hello, how are you?",
+            "chat_history": [],
             "model": "command-r"
         }
     }
