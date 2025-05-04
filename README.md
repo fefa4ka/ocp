@@ -33,6 +33,7 @@ The proxy requires configuration, primarily the URL for the model list and poten
 
 *   **`MODEL_LIST_URL`**: The URL to fetch the JSON list of models (e.g., `https://api.example.com/models`). Defaults to `https://api.eliza.yandex.net/models` if not set.
 *   **`MODEL_LIST_AUTH_TOKEN`**: (Optional) An OAuth token to include in the `Authorization: OAuth <token>` header when fetching the model list. If not provided, the request will be made without an Authorization header.
+*   **`LOG_LEVEL`**: (Optional) Sets the logging level for the application. Accepts standard Python logging levels: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Also accepts `NONE` to disable logging. Defaults to `INFO`.
 
 ## Setup and Running
 
@@ -51,11 +52,13 @@ The proxy requires configuration, primarily the URL for the model list and poten
     *   **Option A: Environment Variable:**
         export MODEL_LIST_URL="<your_actual_model_list_source_url>"
         export MODEL_LIST_AUTH_TOKEN="<your_oauth_token>" # Optional
+        export LOG_LEVEL="DEBUG" # Optional, defaults to INFO
         ```
     *   **Option B: `.env` file:** Create a file named `.env` in the project root with the following content:
         ```dotenv
         MODEL_LIST_URL=<your_actual_model_list_source_url>
         MODEL_LIST_AUTH_TOKEN=<your_oauth_token> # Optional
+        LOG_LEVEL=DEBUG # Optional, defaults to INFO
         ```
 
 4.  **Run the server:**

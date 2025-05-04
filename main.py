@@ -17,9 +17,30 @@ from models import (
     SourceModelList,
 )
 
-# Set logging level to DEBUG to see the new log message
-logging.basicConfig(level=logging.DEBUG)
+# --- Logging Setup ---
+# Map string level names to logging constants
+log_level_str = settings.LOG_LEVEL.upper()
+log_level_map = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+    "NONE": logging.CRITICAL + 1, # Effectively disable logging
+}
+log_level = log_level_map.get(log_level_str, logging.INFO) # Default to INFO if invalid
+
+# Configure basic logging
+logging.basicConfig(
+    level=log_level,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    # Force=True might be needed if uvicorn also configures logging
+    force=True
+)
 logger = logging.getLogger(__name__)
+logger.info(f"Logging configured with level: {logging.getLevelName(log_level)}")
+# --- End Logging Setup ---
+
 
 app = FastAPI(
     title="OpenAI Compatible API Proxy",
