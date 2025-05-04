@@ -1,7 +1,7 @@
+import base64
 import json  # Add json import
 import logging
 import time  # Add time import
-import base64
 from typing import Any, AsyncGenerator, Dict, List, Optional  # Import Optional
 from urllib.parse import urlparse
 
@@ -12,9 +12,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from config import settings
 from models import (
     OpenAIChatCompletionRequest,  # Added import
+    OpenAIImageData,
     OpenAIImageGenerationRequest,
     OpenAIImageGenerationResponse,
-    OpenAIImageData,
     OpenAIModel,
     OpenAIModelList,
     SourceModel,
@@ -197,10 +197,10 @@ async def images_generations(request: Request):
         if model_family not in ["ideogram", "dall-e-3", "recraft"]:
             logger.error(f"Model family '{model_family}' is not supported for image generation")
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"Model '{model_id}' with family '{model_family}' is not supported for image generation"
             )
-            
+
         # Log detailed model information
         logger.debug(f"Model details - ID: {model_id}, Family: {model_family}, Handle: {handle}")
         logger.debug(f"Full model object: {target_model.model_dump()}")
@@ -242,13 +242,13 @@ async def images_generations(request: Request):
             # The error shows the backend expects 'dall-e-3', 'dall-e-2', or 'gpt-image-1'
             original_model = payload_for_backend.get("model", "")
             logger.debug(f"Original model parameter: {original_model}")
-            
+
             # Extract the base model name without parameters
             if ":" in original_model:
                 base_model = original_model.split(":")[0]
                 logger.debug(f"Extracted base model: {base_model}")
                 payload_for_backend["model"] = base_model
-            
+
             logger.debug(f"Adjusted model parameter for dall-e-3 family: {payload_for_backend.get('model')}")
 
         logger.debug(f"Transformed payload for {model_family}: {payload_for_backend}")
@@ -271,7 +271,7 @@ async def images_generations(request: Request):
             response_data = backend_response.json()
             logger.info(f"Successfully received response from backend for model '{model_id}'")
             logger.debug(f"Backend response data for model '{model_id}': {response_data}")
-            
+
             # Log additional details about the response
             if "data" in response_data:
                 logger.info(f"Generated {len(response_data['data'])} images")
@@ -283,7 +283,7 @@ async def images_generations(request: Request):
                         logger.info(f"Image {i+1} base64 data available: {b64_length} bytes")
 
             # --- Transform response if needed ---
-            final_response_data = response_data
+            final_response_data = response_data.get('response', {})
             if model_family == "ideogram":
                 final_response_data = transform_ideogram_response_to_openai(response_data, model_id)
             elif model_family == "recraft":
@@ -312,12 +312,12 @@ async def images_generations(request: Request):
         return JSONResponse(content=error_response, status_code=503)
     except httpx.HTTPStatusError as e:
         logger.error(f"Backend service returned error {e.response.status_code}: {e.response.text}")
-        
+
         # Try to parse and log the error response in more detail
         try:
             error_json = e.response.json()
             logger.error(f"Parsed error response: {error_json}")
-            
+
             # Extract and log specific error details if available
             if isinstance(error_json, dict):
                 if "error" in error_json:
@@ -1319,13 +1319,13 @@ def transform_gemini_stream_chunk_to_openai(
 def transform_openai_request_to_ideogram(openai_data: Dict[str, Any]) -> Dict[str, Any]:
     """Transforms an OpenAI Image Generation request to an Ideogram API request."""
     logger.debug("Transforming OpenAI request to Ideogram format.")
-    
+
     ideogram_request = {
         "prompt": openai_data.get("prompt", ""),
         "aspect_ratio": "1:1",  # Default to square
         "style": "natural",  # Default style
     }
-    
+
     # Map size to aspect_ratio
     size = openai_data.get("size", "1024x1024")
     if size == "1024x1024":
@@ -1334,7 +1334,7 @@ def transform_openai_request_to_ideogram(openai_data: Dict[str, Any]) -> Dict[st
         ideogram_request["aspect_ratio"] = "16:9"
     elif size == "1024x1792":
         ideogram_request["aspect_ratio"] = "9:16"
-    
+
     # Map style if provided
     if "style" in openai_data:
         openai_style = openai_data["style"]
@@ -1342,11 +1342,11 @@ def transform_openai_request_to_ideogram(openai_data: Dict[str, Any]) -> Dict[st
             ideogram_request["style"] = "enhance"
         elif openai_style == "natural":
             ideogram_request["style"] = "natural"
-    
+
     # Map number of images
     if "n" in openai_data:
         ideogram_request["n"] = openai_data["n"]
-    
+
     logger.debug(f"Transformed Ideogram request: {ideogram_request}")
     return ideogram_request
 
@@ -1354,16 +1354,16 @@ def transform_openai_request_to_ideogram(openai_data: Dict[str, Any]) -> Dict[st
 def transform_ideogram_response_to_openai(ideogram_data: Dict[str, Any], model_id: str) -> Dict[str, Any]:
     """Transforms an Ideogram API response to OpenAI Image Generation format."""
     logger.debug(f"Transforming Ideogram response for model {model_id}")
-    
+
     openai_response = {
         "created": int(time.time()),
         "data": []
     }
-    
+
     # Extract image URLs from Ideogram response
     # Assuming Ideogram returns a list of image URLs in a field like 'images' or 'results'
     images = ideogram_data.get("images", []) or ideogram_data.get("results", [])
-    
+
     if isinstance(images, list):
         for image in images:
             # Handle different possible response formats
@@ -1375,9 +1375,9 @@ def transform_ideogram_response_to_openai(ideogram_data: Dict[str, Any], model_i
                 image_url = image.get("url") or image.get("image_url") or image.get("path", "")
             else:
                 continue
-                
+
             openai_response["data"].append({"url": image_url})
-    
+
     logger.debug(f"Transformed OpenAI response: {openai_response}")
     return openai_response
 
@@ -1385,14 +1385,14 @@ def transform_ideogram_response_to_openai(ideogram_data: Dict[str, Any], model_i
 def transform_openai_request_to_recraft(openai_data: Dict[str, Any]) -> Dict[str, Any]:
     """Transforms an OpenAI Image Generation request to a Recraft API request."""
     logger.debug("Transforming OpenAI request to Recraft format.")
-    
+
     recraft_request = {
         "prompt": openai_data.get("prompt", ""),
         "width": 1024,
         "height": 1024,
         "num_images": openai_data.get("n", 1),
     }
-    
+
     # Map size to width and height
     size = openai_data.get("size", "1024x1024")
     if "x" in size:
@@ -1402,7 +1402,7 @@ def transform_openai_request_to_recraft(openai_data: Dict[str, Any]) -> Dict[str
             recraft_request["height"] = height
         except ValueError:
             logger.warning(f"Invalid size format: {size}, using default 1024x1024")
-    
+
     # Map quality if provided
     if "quality" in openai_data:
         quality = openai_data["quality"]
@@ -1410,7 +1410,7 @@ def transform_openai_request_to_recraft(openai_data: Dict[str, Any]) -> Dict[str
             recraft_request["quality"] = "high"
         else:
             recraft_request["quality"] = "standard"
-    
+
     logger.debug(f"Transformed Recraft request: {recraft_request}")
     return recraft_request
 
@@ -1418,20 +1418,20 @@ def transform_openai_request_to_recraft(openai_data: Dict[str, Any]) -> Dict[str
 def transform_recraft_response_to_openai(recraft_data: Dict[str, Any], model_id: str) -> Dict[str, Any]:
     """Transforms a Recraft API response to OpenAI Image Generation format."""
     logger.debug(f"Transforming Recraft response for model {model_id}")
-    
+
     openai_response = {
         "created": int(time.time()),
         "data": []
     }
-    
+
     # Extract image data from Recraft response
     # Assuming Recraft returns images in a field like 'images' or 'results'
     images = recraft_data.get("images", []) or recraft_data.get("results", [])
-    
+
     if isinstance(images, list):
         for image in images:
             image_data = {}
-            
+
             # Handle different possible response formats
             if isinstance(image, str):
                 # If image is directly a URL string
@@ -1442,10 +1442,10 @@ def transform_recraft_response_to_openai(recraft_data: Dict[str, Any], model_id:
                     image_data["url"] = image["url"]
                 elif "base64" in image:
                     image_data["b64_json"] = image["base64"]
-            
+
             if image_data:
                 openai_response["data"].append(image_data)
-    
+
     logger.debug(f"Transformed OpenAI response: {openai_response}")
     return openai_response
 
