@@ -259,7 +259,8 @@ async def chat_completions(request: Request):
             Yields strings formatted as SSE messages ('data: ...\n\n').
             """
             is_anthropic = "/anthropic/" in target_handle.lower()
-            is_gemini = "/gemini/" in target_handle.lower()
+            # Check for both /gemini/ and /google/ patterns
+            is_gemini = "/gemini/" in target_handle.lower() or "/google/" in target_handle.lower()
             # Generate a base ID for the stream, potentially vendor-specific
             if is_anthropic:
                 openai_chunk_id = f"chatcmpl-anthropic-{int(time.time())}"
@@ -388,37 +389,36 @@ async def chat_completions(request: Request):
                                      line = line[len("data: "):]
                                  line = line.strip()
                                  if not line:
-                                     continue # Skip empty lines
+                                     continue # Skip empty lines (often act as SSE message separators)
 
                                  try:
-                                     # Gemini streams a list containing one chunk object usually
-                                     chunk_list = json.loads(line)
-                                     if isinstance(chunk_list, list) and len(chunk_list) > 0:
-                                         gemini_chunk_data = chunk_list[0] # Process the first item
-                                         logger.debug(f"Parsed Gemini chunk data: {gemini_chunk_data}")
+                                     # The actual payload is the JSON object itself
+                                     gemini_chunk_data = json.loads(line)
+                                     logger.debug(f"Parsed Gemini chunk data: {gemini_chunk_data}")
 
-                                         openai_chunk = transform_gemini_stream_chunk_to_openai(
-                                             gemini_chunk_data, openai_chunk_id, requested_model
-                                         )
+                                     openai_chunk = transform_gemini_stream_chunk_to_openai(
+                                         gemini_chunk_data, openai_chunk_id, requested_model
+                                     )
 
-                                         if openai_chunk:
-                                             yield f"data: {json.dumps(openai_chunk)}\n\n"
-                                             logger.debug(f"Yielded transformed OpenAI chunk: {openai_chunk}")
-                                     else:
-                                         logger.warning(f"Received unexpected Gemini stream format (not a list or empty): {line}")
+                                     if openai_chunk:
+                                         yield f"data: {json.dumps(openai_chunk)}\n\n"
+                                         logger.debug(f"Yielded transformed OpenAI chunk: {openai_chunk}")
+                                     # else: Chunk transformation resulted in None (e.g., empty delta), do nothing
 
                                  except json.JSONDecodeError:
-                                     logger.error(f"Failed to decode JSON data from Gemini stream: {line}")
+                                     logger.error(f"Failed to decode JSON data from Gemini stream line: {line}")
                                  except Exception as transform_err:
                                      logger.exception(f"Error transforming Gemini chunk: {transform_err}")
                              logger.info(f"Gemini stream finished for model '{requested_model}'.")
 
 
-                        else: # Not Anthropic or Gemini, assume OpenAI compatible stream (forward raw chunks)
+                        else: # Not Anthropic or Gemini, assume OpenAI compatible stream (forward raw lines)
+                            logger.debug(f"Starting raw SSE forwarding loop for model '{requested_model}'.")
                             # Note: This assumes the non-Anthropic/non-Gemini backend ALREADY sends OpenAI formatted SSE.
-                            async for chunk in backend_response.aiter_bytes():
-                                # For OpenAI-compatible backends, forward the raw byte chunks directly.
-                                # FastAPI's StreamingResponse handles the content type.
+                            # Iterate line by line to ensure proper SSE formatting.
+                            async for line in backend_response.aiter_lines():
+                                logger.debug(f"Raw backend SSE line: {line}")
+                                # Forward lines directly, adding the necessary SSE line endings
                                 yield chunk
                             logger.info(f"Finished forwarding raw stream from backend for model '{requested_model}'")
 
