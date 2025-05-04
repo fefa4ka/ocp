@@ -1419,14 +1419,18 @@ def transform_recraft_response_to_openai(recraft_data: Dict[str, Any], model_id:
     """Transforms a Recraft API response to OpenAI Image Generation format."""
     logger.debug(f"Transforming Recraft response for model {model_id}")
 
+    # Use the created timestamp from the response if available
+    created = recraft_data.get("response", {}).get("created", int(time.time()))
+    
     openai_response = {
-        "created": int(time.time()),
+        "created": created,
         "data": []
     }
 
     # Extract image data from Recraft response
-    # Assuming Recraft returns images in a field like 'images' or 'results'
-    images = recraft_data.get("images", []) or recraft_data.get("results", [])
+    # The actual response is nested under 'response.data'
+    response_obj = recraft_data.get("response", {})
+    images = response_obj.get("data", [])
 
     if isinstance(images, list):
         for image in images:
@@ -1440,11 +1444,19 @@ def transform_recraft_response_to_openai(recraft_data: Dict[str, Any], model_id:
                 # If image is an object with URL or base64 data
                 if "url" in image:
                     image_data["url"] = image["url"]
+                elif "image_id" in image and "url" in image:
+                    # Recraft specific format with image_id and url
+                    image_data["url"] = image["url"]
                 elif "base64" in image:
                     image_data["b64_json"] = image["base64"]
+                elif "b64_json" in image:
+                    image_data["b64_json"] = image["b64_json"]
 
             if image_data:
                 openai_response["data"].append(image_data)
+
+    # If response_format was 'b64_json', ensure we return base64 data
+    # This would require additional handling if Recraft doesn't directly provide base64
 
     logger.debug(f"Transformed OpenAI response: {openai_response}")
     return openai_response
