@@ -317,10 +317,11 @@ async def chat_completions(request: Request):
                             yield "data: [DONE]\n\n"
                             return  # Stop the generator
 
-                        logger.info(f"Starting stream processing for model '{requested_model}'. Anthropic transformation: {is_anthropic}")
+                        logger.info(f"Starting stream processing for model '{requested_model}'. Backend type: {'Anthropic' if is_anthropic else 'Gemini' if is_gemini else 'Other'}")
 
                         if is_anthropic:
                             # Process Anthropic SSE stream line by line
++                           logger.debug(f"Starting Anthropic SSE processing loop for model '{requested_model}'.")
                             current_event = None
                             current_data_lines = []
                             async for line in backend_response.aiter_lines():
@@ -358,6 +359,7 @@ async def chat_completions(request: Request):
 
                         elif is_gemini:
                              # Process Gemini SSE stream (JSON objects per line)
++                            logger.debug(f"Starting Gemini SSE processing loop for model '{requested_model}'.")
                              async for line in backend_response.aiter_lines():
                                  logger.debug(f"Raw Gemini SSE line: {line}")
                                  # Gemini streams JSON objects, sometimes prefixed with "data: "
