@@ -1,7 +1,7 @@
-import json # Add json import
+import json  # Add json import
 import logging
-import time # Add time import
-from typing import Any, AsyncGenerator, Dict, List, Optional # Import Optional
+import time  # Add time import
+from typing import Any, AsyncGenerator, Dict, List, Optional  # Import Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -283,14 +283,14 @@ async def chat_completions(request: Request):
                     async with stream_client.stream(
                         request_method, req_url, json=log_payload, headers=req_headers, timeout=180.0
                     ) as backend_response:
-+                       logger.info(f"Stream connection established for model '{requested_model}' to {req_url}. Status: {backend_response.status_code}")
+                        logger.info(f"Stream connection established for model '{requested_model}' to {req_url}. Status: {backend_response.status_code}")
                         # Check for backend errors *before* streaming body
                         if backend_response.status_code >= 400:
                             error_body = await backend_response.aread()
                             try:
                                 # Try to parse as JSON
                                 error_json = json.loads(error_body.decode())
-                        
+
                                 # Check if it's already in OpenAI format
                                 if "error" in error_json and isinstance(error_json["error"], dict):
                                     error_detail = error_json
@@ -299,7 +299,7 @@ async def chat_completions(request: Request):
                                     error_message = error_json.get("detail", error_json.get("message", str(error_json)))
                                     if isinstance(error_message, dict):
                                         error_message = json.dumps(error_message)
-                                
+
                                     error_detail = {
                                         "error": {
                                             "message": error_message,
@@ -319,9 +319,9 @@ async def chat_completions(request: Request):
                                         "code": "service_unavailable" if backend_response.status_code >= 500 else "bad_request"
                                     }
                                 }
-                    
+
                             logger.error(f"Backend streaming request failed with status {backend_response.status_code}: {error_detail}")
-                    
+
                             # Yield the error in OpenAI format and then [DONE]
                             yield f"data: {json.dumps(error_detail)}\n\n"
                             yield "data: [DONE]\n\n"
@@ -331,7 +331,7 @@ async def chat_completions(request: Request):
 
                         if is_anthropic:
                             # Process Anthropic SSE stream line by line
-+                           logger.debug(f"Starting Anthropic SSE processing loop for model '{requested_model}'.")
+                            logger.debug(f"Starting Anthropic SSE processing loop for model '{requested_model}'.")
                             current_event = None
                             current_data_lines = []
                             async for line in backend_response.aiter_lines():
@@ -369,7 +369,7 @@ async def chat_completions(request: Request):
 
                         elif is_gemini:
                              # Process Gemini SSE stream (JSON objects per line)
-+                            logger.debug(f"Starting Gemini SSE processing loop for model '{requested_model}'.")
+                             logger.debug(f"Starting Gemini SSE processing loop for model '{requested_model}'.")
                              async for line in backend_response.aiter_lines():
                                  logger.debug(f"Raw Gemini SSE line: {line}")
                                  # Gemini streams JSON objects, sometimes prefixed with "data: "
@@ -527,7 +527,7 @@ async def chat_completions(request: Request):
              try:
                  # Try to parse backend error response
                  error_content = e.response.json()
-                 
+
                  # Check if it's already in OpenAI format
                  if "error" in error_content and isinstance(error_content["error"], dict):
                      # Already in OpenAI format, pass through
@@ -537,7 +537,7 @@ async def chat_completions(request: Request):
                      error_message = error_content.get("detail", error_content.get("message", str(error_content)))
                      if isinstance(error_message, dict):
                          error_message = json.dumps(error_message)
-                     
+
                      error_response = {
                          "error": {
                              "message": error_message,
