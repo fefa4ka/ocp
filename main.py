@@ -1391,60 +1391,43 @@ def transform_openai_request_to_cohere(openai_data: Dict[str, Any]) -> Dict[str,
     """Transforms an OpenAI Chat Completion request to a Cohere API request."""
     logger.debug("Transforming OpenAI request to Cohere format.")
     
-    # Initialize Cohere request structure with the correct fields
-    # According to Cohere API docs, the main field is "message" not "query"
-    cohere_request = {
-        "message": "",
-        "model": openai_data.get("model", "command-r")
-    }
+    # Let's examine the error message more carefully
+    # "unknown field: parameter message is not a valid field"
+    # This suggests we need to use a different field structure
+    
+    # Initialize Cohere request structure
+    cohere_request = {}
     
     # Extract messages from OpenAI request
     messages = openai_data.get("messages", [])
     
-    # Process system message if present
-    system_prompt = None
-    for i, msg in enumerate(messages):
-        if msg.get("role") == "system":
-            system_prompt = msg.get("content", "")
-            break
-    
-    # Add system prompt as preamble if present
-    if system_prompt:
-        cohere_request["preamble"] = system_prompt
-    
-    # Process chat history (all messages except the last user message)
-    chat_history = []
-    for i, msg in enumerate(messages):
-        role = msg.get("role")
-        content = msg.get("content", "")
-        
-        # Skip system messages (already handled)
-        if role == "system":
-            continue
-            
-        # Map roles - Cohere uses "USER" and "CHATBOT" roles
-        cohere_role = "USER" if role == "user" else "CHATBOT"
-        
-        # Add to chat history (except the last user message)
-        if i < len(messages) - 1 or role != "user":
-            chat_history.append({
-                "role": cohere_role,
-                "message": content
-            })
-    
-    # Set the current message (last user message)
+    # Get the last user message as the prompt
     last_user_msg = None
     for msg in reversed(messages):
         if msg.get("role") == "user":
             last_user_msg = msg.get("content", "")
             break
     
-    if last_user_msg:
-        cohere_request["message"] = last_user_msg  # Use "message" as the main field
+    if not last_user_msg:
+        logger.warning("No user message found in the request")
+        last_user_msg = ""
     
-    # Add chat history if not empty
-    if chat_history:
-        cohere_request["chat_history"] = chat_history
+    # Set the prompt field - try different field names based on Cohere API versions
+    cohere_request["prompt"] = last_user_msg
+    
+    # Add model
+    cohere_request["model"] = openai_data.get("model", "command-r")
+    
+    # Process system message if present
+    system_prompt = None
+    for msg in messages:
+        if msg.get("role") == "system":
+            system_prompt = msg.get("content", "")
+            break
+    
+    # Add system prompt if present
+    if system_prompt:
+        cohere_request["system_prompt"] = system_prompt
     
     # Map other parameters
     if "temperature" in openai_data:
@@ -1459,7 +1442,31 @@ def transform_openai_request_to_cohere(openai_data: Dict[str, Any]) -> Dict[str,
     if "stream" in openai_data:
         cohere_request["stream"] = openai_data["stream"]
     
-    logger.debug(f"Transformed Cohere request: {cohere_request}")
+    # Log the raw request for debugging
+    logger.debug(f"Raw Cohere request: {cohere_request}")
+    
+    # Try alternative format if needed
+    # Some Cohere API versions might use different field structures
+    alt_request = {
+        "prompt": last_user_msg,
+        "model": openai_data.get("model", "command-r"),
+    }
+    
+    if system_prompt:
+        alt_request["system_prompt"] = system_prompt
+    
+    if "temperature" in openai_data:
+        alt_request["temperature"] = openai_data["temperature"]
+    
+    if "max_tokens" in openai_data:
+        alt_request["max_tokens"] = openai_data["max_tokens"]
+    
+    if "stream" in openai_data:
+        alt_request["stream"] = openai_data["stream"]
+    
+    logger.debug(f"Alternative Cohere request format: {alt_request}")
+    
+    # Return the primary format
     return cohere_request
 
 
@@ -1483,20 +1490,33 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
                 }
             }
         
+        # Log the full response structure for debugging
+        logger.debug(f"Cohere response structure: {cohere_response}")
+        
         # Extract response components
         cohere_id = cohere_response.get("id", f"cohere-id-{int(time.time())}")
         
         # Get the text content from the response
         # Cohere might return text in different formats depending on the API version
         cohere_text = ""
+        
+        # Try different possible locations for the text content
         if "text" in cohere_response:
             cohere_text = cohere_response.get("text", "")
+            logger.debug(f"Found text directly in response: {cohere_text[:100]}...")
+        elif "generations" in cohere_response and isinstance(cohere_response["generations"], list):
+            # Some Cohere endpoints return a list of generations
+            generations = cohere_response["generations"]
+            if generations and "text" in generations[0]:
+                cohere_text = generations[0]["text"]
+                logger.debug(f"Found text in generations[0]: {cohere_text[:100]}...")
         elif "message" in cohere_response:
             # Handle newer Cohere API format where content is in message.text
             message = cohere_response.get("message", {})
             if isinstance(message, dict):
                 if "text" in message:
                     cohere_text = message.get("text", "")
+                    logger.debug(f"Found text in message.text: {cohere_text[:100]}...")
                 elif "content" in message:
                     # Handle content array format
                     content = message.get("content", [])
@@ -1504,6 +1524,17 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
                         for item in content:
                             if isinstance(item, dict) and item.get("type") == "text":
                                 cohere_text += item.get("text", "")
+                        logger.debug(f"Found text in message.content[].text: {cohere_text[:100]}...")
+        
+        # If we still don't have text, try to extract it from any field that might contain it
+        if not cohere_text:
+            logger.warning("Could not find text in standard locations, searching all fields")
+            # Try to find any field that might contain the response text
+            for key, value in cohere_response.items():
+                if isinstance(value, str) and len(value) > 10:  # Assume longer strings might be the content
+                    cohere_text = value
+                    logger.debug(f"Found potential text in field '{key}': {cohere_text[:100]}...")
+                    break
         
         cohere_finish_reason = cohere_response.get("finish_reason")
         
@@ -1530,6 +1561,7 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
         total_tokens = 0
         
         if cohere_usage:
+            logger.debug(f"Processing usage data: {cohere_usage}")
             if "input_tokens" in cohere_usage:
                 prompt_tokens = cohere_usage.get("input_tokens", 0)
             elif "tokens" in cohere_usage and "input_tokens" in cohere_usage.get("tokens", {}):
@@ -1545,6 +1577,7 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
                 completion_tokens = cohere_usage.get("billed_units", {}).get("output_tokens", 0)
             
             total_tokens = prompt_tokens + completion_tokens
+            logger.debug(f"Extracted token counts - prompt: {prompt_tokens}, completion: {completion_tokens}, total: {total_tokens}")
         
         # Construct OpenAI response
         openai_response = {
@@ -1571,7 +1604,7 @@ def transform_cohere_response_to_openai(cohere_data: Dict[str, Any], requested_m
             "system_fingerprint": None,
         }
         
-        logger.debug(f"Successfully transformed Cohere response to OpenAI format.")
+        logger.debug(f"Successfully transformed Cohere response to OpenAI format: {openai_response}")
         return openai_response
         
     except Exception as e:
@@ -1611,6 +1644,9 @@ def transform_cohere_stream_chunk_to_openai(
     }
     
     try:
+        # Log the full chunk structure for debugging
+        logger.debug(f"Cohere stream chunk structure: {json.dumps(cohere_chunk, default=str)}")
+        
         # Check for event type
         event_type = cohere_chunk.get("event_type")
         
@@ -1678,9 +1714,17 @@ def transform_cohere_stream_chunk_to_openai(
                 return openai_chunk
             else:
                 return None
-            
+                
+        # Try to extract text from any field that might contain it
         else:
-            # Unknown event type
+            # Look for any field that might contain text content
+            for key, value in cohere_chunk.items():
+                if isinstance(value, str) and len(value) > 0 and key not in ["event_type", "finish_reason"]:
+                    logger.debug(f"Found potential text content in field '{key}': {value}")
+                    openai_chunk["choices"][0]["delta"] = {"content": value}
+                    return openai_chunk
+            
+            # If we get here, we couldn't find any text content
             logger.warning(f"Unknown Cohere stream chunk format: {cohere_chunk}")
             return None
             
