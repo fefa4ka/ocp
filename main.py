@@ -500,8 +500,9 @@ async def chat_completions(request: Request):
                                  }
                              }
                              return JSONResponse(content=error_response, status_code=500)
-                    elif "/gemini/" in handle.lower():
-                        logger.info(f"Transforming Gemini response for model '{model_id}' to OpenAI format.")
+                    # Check for both /gemini/ and /google/ patterns for response transformation
+                    elif "/gemini/" in handle.lower() or "/google/" in handle.lower():
+                        logger.info(f"Transforming Gemini/Google response for model '{model_id}' to OpenAI format.")
                         final_response_data = transform_gemini_response_to_openai(response_data, model_id)
                         if "error" in final_response_data:
                              # Format as OpenAI-compatible error
