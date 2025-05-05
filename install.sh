@@ -62,6 +62,12 @@ if [ ! -f "$CONFIG_DIR/.env" ]; then
 MODEL_LIST_URL=https://example.com/models
 # MODEL_LIST_AUTH_TOKEN=your_token_here
 LOG_LEVEL=INFO
+# SSH tunnel configuration
+SSH_KEY_PATH=~/.ssh/intranet_ssh
+SSH_REMOTE_USER=user
+SSH_REMOTE_HOST=example.com
+SSH_REMOTE_PORT=22
+SSH_TUNNEL_PORT=8888
 EOF
 fi
 
@@ -79,7 +85,7 @@ After=network.target
 User=$APP_USER
 Group=$APP_GROUP
 WorkingDirectory=$APP_DIR
-ExecStart=/bin/bash -c "$VENV_DIR/bin/uvicorn main:app --host 127.0.0.1 --port 8000 & autossh -i ~/.ssh/intranet_ssh -R 8888:127.0.0.1:8000 user@example.com -N"
+ExecStart=/bin/bash -c "source $CONFIG_DIR/.env && $VENV_DIR/bin/uvicorn main:app --host 127.0.0.1 --port 8000 & autossh -i \$SSH_KEY_PATH -R \$SSH_TUNNEL_PORT:127.0.0.1:8000 \$SSH_REMOTE_USER@\$SSH_REMOTE_HOST -p \$SSH_REMOTE_PORT -N"
 Restart=always
 RestartSec=5
 SyslogIdentifier=$APP_NAME
