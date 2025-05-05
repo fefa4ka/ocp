@@ -148,7 +148,7 @@ Accepts standard OpenAI chat completion requests. It looks up the requested `mod
 
 **Proxy Behavior:**
 *   The target backend URL is constructed using the **scheme and host** from the `MODEL_LIST_URL` combined with the `handle` specified for the model in the source list.
-    *   Example: If `MODEL_LIST_URL` is `https://api.example.com/models` and the handle for model `GigaChat-2-Max` is `/gigachat/api/v1/chat/completions`, the request will be proxied to `https://api.example.com/gigachat/api/v1/chat/completions`.
+    *   Example: If `MODEL_LIST_URL` is `https://example.com/models` and the handle for model `GigaChat-2-Max` is `/gigachat/api/v1/chat/completions`, the request will be proxied to `https://example.com/gigachat/api/v1/chat/completions`.
 *   The request to the backend uses the **same `Authorization: OAuth <token>` header** as used for fetching the model list, if `MODEL_LIST_AUTH_TOKEN` is configured. If the token is not configured, the request is sent without an `Authorization` header.
 *   The request body sent by the client is forwarded directly to the backend.
 *   The response body and status code from the backend are returned directly to the client.
