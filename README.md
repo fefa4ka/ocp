@@ -37,6 +37,8 @@ The proxy requires configuration, primarily the URL for the model list and poten
 
 ## Setup and Running
 
+### Option 1: Manual Setup (Development)
+
 1.  **Create a virtual environment (optional but recommended):**
     ```bash
     python -m venv venv
@@ -50,6 +52,7 @@ The proxy requires configuration, primarily the URL for the model list and poten
 
 3.  **Configure the Model List URL:**
     *   **Option A: Environment Variable:**
+        ```bash
         export MODEL_LIST_URL="<your_actual_model_list_source_url>"
         export MODEL_LIST_AUTH_TOKEN="<your_oauth_token>" # Optional
         export LOG_LEVEL="DEBUG" # Optional, defaults to INFO
@@ -67,7 +70,37 @@ The proxy requires configuration, primarily the URL for the model list and poten
     ```
     *   `--reload` enables auto-reloading during development. Remove it for production.
 
-5.  **Access the API:**
+### Option 2: Production Installation (Ubuntu)
+
+For production deployment on Ubuntu, you can use the provided installation script that sets up the proxy as a systemd service with autostart:
+
+1. **Make the installation script executable:**
+   ```bash
+   chmod +x install.sh
+   ```
+
+2. **Run the installation script as root:**
+   ```bash
+   sudo ./install.sh
+   ```
+
+3. **The script will:**
+   - Install required system dependencies
+   - Create a dedicated service user
+   - Set up the application in `/opt/openai-proxy/`
+   - Create a systemd service with autostart
+   - Configure the service to run on port 8000
+
+4. **After installation:**
+   - The service will be running at `http://localhost:8000`
+   - Configuration file is at `/etc/openai-proxy/.env`
+   - View logs with: `sudo journalctl -u openai-proxy`
+   - Control the service with:
+     ```bash
+     sudo systemctl start|stop|restart|status openai-proxy
+     ```
+
+5. **Access the API:**
     *   Models list: `http://localhost:8000/v1/models`
     *   API Docs (Swagger UI): `http://localhost:8000/docs`
     *   Health Check: `http://localhost:8000/health`
