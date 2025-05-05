@@ -31,7 +31,7 @@ echo -e "${GREEN}Installing OpenAI Compatible API Proxy...${NC}"
 # Install system dependencies
 echo -e "${YELLOW}Installing system dependencies...${NC}"
 apt-get update
-apt-get install -y python3 python3-venv python3-pip
+apt-get install -y python3 python3-venv python3-pip autossh
 
 # Create app user if it doesn't exist
 if ! id -u "$APP_USER" &>/dev/null; then
@@ -79,7 +79,7 @@ After=network.target
 User=$APP_USER
 Group=$APP_GROUP
 WorkingDirectory=$APP_DIR
-ExecStart=$VENV_DIR/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+ExecStart=/bin/bash -c "$VENV_DIR/bin/uvicorn main:app --host 127.0.0.1 --port 8000 & autossh -i ~/.ssh/intranet_ssh -R 8888:127.0.0.1:8000 alexsanderkondratev@exte.nder.su -N"
 Restart=always
 RestartSec=5
 SyslogIdentifier=$APP_NAME

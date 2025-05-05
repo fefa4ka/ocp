@@ -66,7 +66,7 @@ The proxy requires configuration, primarily the URL for the model list and poten
 
 4.  **Run the server:**
     ```bash
-    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    uvicorn main:app --host 127.0.0.1 --port 8000 --reload
     ```
     *   `--reload` enables auto-reloading during development. Remove it for production.
 
@@ -93,6 +93,7 @@ For production deployment on Ubuntu, you can use the provided installation scrip
 
 4. **After installation:**
    - The service will be running at `http://localhost:8000`
+   - The service will also be accessible remotely via SSH tunnel at `exte.nder.su:8888`
    - Configuration file is at `/etc/openai-proxy/.env`
    - View logs with: `sudo journalctl -u openai-proxy`
    - Control the service with:
