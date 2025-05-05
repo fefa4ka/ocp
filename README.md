@@ -31,7 +31,7 @@ This allows users to interact with various underlying LLM providers (like OpenAI
 
 The proxy requires configuration, primarily the URL for the model list and potentially an authentication token. These can be set via environment variables or by creating a `.env` file in the project root.
 
-*   **`MODEL_LIST_URL`**: The URL to fetch the JSON list of models (e.g., `https://api.example.com/models`). Defaults to `https://api.eliza.yandex.net/models` if not set.
+*   **`MODEL_LIST_URL`**: The URL to fetch the JSON list of models (e.g., `https://example.com/models`). Defaults to `https://example.com/models` if not set.
 *   **`MODEL_LIST_AUTH_TOKEN`**: (Optional) An OAuth token to include in the `Authorization: OAuth <token>` header when fetching the model list. If not provided, the request will be made without an Authorization header.
 *   **`LOG_LEVEL`**: (Optional) Sets the logging level for the application. Accepts standard Python logging levels: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Also accepts `NONE` to disable logging. Defaults to `INFO`.
 
@@ -168,13 +168,13 @@ Accepts standard OpenAI chat completion requests. It looks up the requested `mod
 }
 ```
 
-Assuming `MODEL_LIST_URL` is `https://api.example.com/models` and `MODEL_LIST_AUTH_TOKEN` is set, the proxy will:
+Assuming `MODEL_LIST_URL` is `https://example.com/models` and `MODEL_LIST_AUTH_TOKEN` is set, the proxy will:
 1. Find the model `accounts/fireworks/models/llama-v3p1-405b-instruct`.
 2. Get its handle (e.g., `/fireworks/chat/completions`).
-3. Send a POST request to `https://api.example.com/fireworks/chat/completions`.
+3. Send a POST request to `https://example.com/fireworks/chat/completions`.
 4. Include the `Authorization: OAuth <token>` header.
 5. Forward the JSON body above.
-6. Return the response received from `https://api.example.com/...` to the client.
+6. Return the response received from `https://example.com/...` to the client.
 
 ## Example Source Model List Format
 

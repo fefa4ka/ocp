@@ -2032,6 +2032,6 @@ if __name__ == "__main__":
     import uvicorn
     # For local development, run directly:
     # Set MODEL_LIST_URL env var or create .env file
-    # Example: export MODEL_LIST_URL='http://127.0.0.1:8001/models.json'
-    # Or create a .env file with: MODEL_LIST_URL=http://127.0.0.1:8001/models.json
+    # Example: export MODEL_LIST_URL='http://example.com/models.json'
+    # Or create a .env file with: MODEL_LIST_URL=http://example.com/models.json
     uvicorn.run(app, host="127.0.0.1", port=8000)

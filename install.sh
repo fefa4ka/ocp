@@ -59,7 +59,7 @@ python3 -m venv "$VENV_DIR"
 if [ ! -f "$CONFIG_DIR/.env" ]; then
   echo -e "${YELLOW}Creating default .env configuration...${NC}"
   cat > "$CONFIG_DIR/.env" << EOF
-MODEL_LIST_URL=https://api.eliza.yandex.net/models
+MODEL_LIST_URL=https://example.com/models
 # MODEL_LIST_AUTH_TOKEN=your_token_here
 LOG_LEVEL=INFO
 EOF
@@ -79,7 +79,7 @@ After=network.target
 User=$APP_USER
 Group=$APP_GROUP
 WorkingDirectory=$APP_DIR
-ExecStart=/bin/bash -c "$VENV_DIR/bin/uvicorn main:app --host 127.0.0.1 --port 8000 & autossh -i ~/.ssh/intranet_ssh -R 8888:127.0.0.1:8000 alexsanderkondratev@exte.nder.su -N"
+ExecStart=/bin/bash -c "$VENV_DIR/bin/uvicorn main:app --host 127.0.0.1 --port 8000 & autossh -i ~/.ssh/intranet_ssh -R 8888:127.0.0.1:8000 user@example.com -N"
 Restart=always
 RestartSec=5
 SyslogIdentifier=$APP_NAME
