@@ -796,7 +796,11 @@ async def chat_completions(request: Request):
 
                     # --- Transform response if needed ---
                     final_response_data = response_data
-                    if "/anthropic/" in handle.lower():
+                    # Check if this is an OpenAI response with a nested 'response' field
+                    if "/openai/" in handle.lower() and "response" in response_data:
+                        logger.info(f"Extracting nested response for OpenAI model '{model_id}'")
+                        final_response_data = response_data.get("response", {})
+                    elif "/anthropic/" in handle.lower():
                         logger.info(f"Transforming Anthropic response for model '{model_id}' to OpenAI format.")
                         final_response_data = transform_anthropic_response_to_openai(response_data, model_id)
                         # Check if transformation resulted in an error structure
