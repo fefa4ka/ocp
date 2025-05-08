@@ -113,6 +113,154 @@ async def startup_event():
     # TODO: Add periodic refresh logic if needed
 
 
+@app.post("/v1/embeddings")
+async def embeddings(request: Request):
+    """
+    Proxies embedding requests to the backend defined by the model's handle,
+    using the same host as the MODEL_LIST_URL and the same OAuth token.
+    """
+    try:
+        # 1. Read the original request data
+        original_request_data = await request.json()
+        logger.debug(f"Received raw request data for embeddings: {original_request_data}")
+
+        # 2. Make a copy to modify for the backend request payload
+        payload_for_backend = original_request_data.copy()
+
+        # 3. Perform model lookup using the model from the payload
+        model_id = payload_for_backend.get("model")
+        if not model_id:
+            raise HTTPException(status_code=400, detail="Missing 'model' field in request body")
+
+        logger.info(f"Received embeddings request for model: {model_id}")
+
+        # Find the model in the cached map
+        target_model = model_map.get(model_id)
+        if not target_model:
+            logger.warning(f"Model '{model_id}' not found in cache. Available: {list(model_map.keys())}")
+            raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found.")
+
+        handle = target_model.handle
+        logger.info(f"Found model '{model_id}' with handle: {handle}")
+
+        # --- Determine the target backend URL ---
+        try:
+            parsed_list_url = urlparse(settings.MODEL_LIST_URL)
+            if not parsed_list_url.scheme or not parsed_list_url.netloc:
+                raise ValueError("MODEL_LIST_URL is invalid or missing scheme/host")
+
+            # Construct target URL using the scheme and host from MODEL_LIST_URL and the handle
+            target_url = f"{parsed_list_url.scheme}://{parsed_list_url.netloc}{handle}"
+            logger.info(f"Constructed target URL for embeddings: {target_url}")
+
+        except ValueError as e:
+            logger.error(f"Could not parse MODEL_LIST_URL ('{settings.MODEL_LIST_URL}'): {e}")
+            raise HTTPException(status_code=500, detail="Server configuration error: Invalid MODEL_LIST_URL.")
+
+        # --- Prepare Headers ---
+        headers_to_forward = {
+            "Content-Type": "application/json",
+        }
+
+        # Add Authorization header using the same token as for the model list
+        if settings.MODEL_LIST_AUTH_TOKEN:
+            headers_to_forward["Authorization"] = f"OAuth {settings.MODEL_LIST_AUTH_TOKEN}"
+            logger.debug("Using configured MODEL_LIST_AUTH_TOKEN for backend request.")
+        else:
+            logger.warning(f"No MODEL_LIST_AUTH_TOKEN configured. Request to {target_url} will be unauthenticated.")
+
+        # --- Forward the request ---
+        logger.info(f"Forwarding embeddings request for model '{model_id}' to {target_url}")
+
+        async with httpx.AsyncClient() as client:
+            backend_response = await client.post(
+                target_url,
+                json=payload_for_backend,
+                headers=headers_to_forward,
+                timeout=180.0  # Set a reasonable timeout for embedding requests
+            )
+
+            # Raise exception for 4xx/5xx responses from the backend
+            backend_response.raise_for_status()
+
+            # Return the raw JSON response from the backend
+            response_data = backend_response.json()
+            logger.info(f"Successfully received response from backend for model '{model_id}'")
+            logger.debug(f"Backend response data for model '{model_id}': {response_data}")
+
+            # --- Transform response if needed ---
+            final_response_data = response_data
+            # Check if this is an OpenAI response with a nested 'response' field
+            if "/openai/" in handle.lower() and "response" in response_data:
+                logger.info(f"Extracting nested response for OpenAI model '{model_id}'")
+                final_response_data = response_data.get("response", {})
+
+            return JSONResponse(content=final_response_data, status_code=backend_response.status_code)
+
+    except httpx.RequestError as e:
+        logger.error(f"Error requesting backend: {e}")
+        error_response = {
+            "error": {
+                "message": f"Error contacting backend service: {e}",
+                "type": "server_error",
+                "param": None,
+                "code": "service_unavailable"
+            }
+        }
+        return JSONResponse(content=error_response, status_code=503)
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Backend service returned error {e.response.status_code}: {e.response.text}")
+        try:
+            error_content = e.response.json()
+            if "error" in error_content and isinstance(error_content["error"], dict):
+                return JSONResponse(content=error_content, status_code=e.response.status_code)
+            else:
+                error_message = error_content.get("detail", error_content.get("message", str(error_content)))
+                if isinstance(error_message, dict):
+                    error_message = json.dumps(error_message)
+                error_response = {
+                    "error": {
+                        "message": error_message,
+                        "type": "server_error" if e.response.status_code >= 500 else "invalid_request_error",
+                        "param": None,
+                        "code": "service_unavailable" if e.response.status_code >= 500 else "bad_request"
+                    }
+                }
+                return JSONResponse(content=error_response, status_code=e.response.status_code)
+        except Exception:
+            error_response = {
+                "error": {
+                    "message": e.response.text or f"Backend error {e.response.status_code}",
+                    "type": "server_error" if e.response.status_code >= 500 else "invalid_request_error",
+                    "param": None,
+                    "code": "service_unavailable" if e.response.status_code >= 500 else "bad_request"
+                }
+            }
+            return JSONResponse(content=error_response, status_code=e.response.status_code)
+    except HTTPException as e:
+        logger.error(f"HTTP exception in embeddings endpoint: {e.detail} (status: {e.status_code})")
+        error_response = {
+            "error": {
+                "message": str(e.detail),
+                "type": "server_error" if e.status_code >= 500 else "invalid_request_error",
+                "param": None,
+                "code": "service_unavailable" if e.status_code >= 500 else "bad_request"
+            }
+        }
+        return JSONResponse(content=error_response, status_code=e.status_code)
+    except Exception as e:
+        logger.exception(f"Unexpected error in embeddings endpoint: {e}")
+        error_response = {
+            "error": {
+                "message": "An unexpected error occurred",
+                "type": "server_error",
+                "param": None,
+                "code": "internal_error"
+            }
+        }
+        return JSONResponse(content=error_response, status_code=500)
+
+
 @app.get("/v1/models", response_model=OpenAIModelList)
 async def get_models():
     """
@@ -142,6 +290,9 @@ async def get_models():
         # but keep them in the cache for image generation requests
         if model.model_family.lower() in ["dall-e-3", "recraft", "ideogram"]:
             continue
+                
+        # Include embedding models in the models list
+        # They will be shown in the models list but handled by the embeddings endpoint
             
         # Determine 'owned_by' based on model_family or handle if desired
         owned_by = model.model_family # Simple example: use family name
