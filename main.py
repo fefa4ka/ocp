@@ -187,6 +187,7 @@ async def embeddings(request: Request):
             response_data = backend_response.json()
             logger.info(f"Successfully received response from backend for model '{model_id}'")
             logger.debug(f"Backend response data for model '{model_id}': {response_data}")
+            logger.debug(f"Raw response body: {backend_response.text}")
 
             # --- Transform response if needed ---
             final_response_data = response_data
@@ -944,6 +945,8 @@ async def chat_completions(request: Request):
                     response_data = backend_response.json()
                     logger.info(f"Successfully received non-streaming response from backend for model '{model_id}'")
                     logger.debug(f"Backend response data for model '{model_id}': {response_data}")
+                    logger.debug(f"Raw response body: {backend_response.text}")
+                    logger.debug(f"Raw response body: {backend_response.text}")
 
                     # --- Transform response if needed ---
                     final_response_data = response_data
