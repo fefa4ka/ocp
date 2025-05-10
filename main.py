@@ -187,6 +187,7 @@ async def embeddings(request: Request):
             response_data = backend_response.json()
             logger.info(f"Successfully received response from backend for model '{model_id}'")
             logger.debug(f"Backend response data for model '{model_id}': {response_data}")
+            logger.debug(f"Raw request body: {payload_for_backend}")
             logger.debug(f"Raw response body: {backend_response.text}")
 
             # --- Transform response if needed ---
@@ -920,6 +921,7 @@ async def chat_completions(request: Request):
             if is_streaming:
                 # Log the data being passed to the generator
                 logger.debug(f"Passing payload to stream_generator: {payload_for_backend}")
+                logger.debug(f"Raw request body for streaming: {payload_for_backend}")
                 # Create the generator instance, passing the potentially transformed payload
                 generator = stream_generator(target_url, payload_for_backend, headers_to_forward, handle, model_id)
                 # Return a StreamingResponse using the generator
@@ -930,6 +932,7 @@ async def chat_completions(request: Request):
                 # Use a separate client instance for non-streaming requests
                 logger.info(f"Sending non-streaming request for model '{model_id}' to {target_url}")
                 logger.debug(f"Non-streaming payload for '{model_id}': {payload_for_backend}")
+                logger.debug(f"Raw request body for non-streaming: {payload_for_backend}")
                 async with httpx.AsyncClient() as client:
                     backend_response = await client.post(
                         target_url,
@@ -945,6 +948,7 @@ async def chat_completions(request: Request):
                     response_data = backend_response.json()
                     logger.info(f"Successfully received non-streaming response from backend for model '{model_id}'")
                     logger.debug(f"Backend response data for model '{model_id}': {response_data}")
+                    logger.debug(f"Raw request body: {payload_for_backend}")
                     logger.debug(f"Raw response body: {backend_response.text}")
                     logger.debug(f"Raw response body: {backend_response.text}")
 
