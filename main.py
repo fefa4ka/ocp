@@ -950,7 +950,6 @@ async def chat_completions(request: Request):
                     logger.debug(f"Backend response data for model '{model_id}': {response_data}")
                     logger.debug(f"Raw request body: {payload_for_backend}")
                     logger.debug(f"Raw response body: {backend_response.text}")
-                    logger.debug(f"Raw response body: {backend_response.text}")
 
                     # --- Transform response if needed ---
                     final_response_data = response_data
