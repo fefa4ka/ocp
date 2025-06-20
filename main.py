@@ -266,7 +266,13 @@ async def embeddings(request: Request):
 @app.options("/v1/models")
 async def options_models():
     """Handle OPTIONS request for CORS preflight."""
-    return JSONResponse(content={}, status_code=200)
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Max-Age": "86400"
+    }
+    return JSONResponse(content={}, status_code=200, headers=headers)
 
 
 @app.get("/v1/models", response_model=OpenAIModelList)
