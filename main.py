@@ -264,6 +264,7 @@ async def embeddings(request: Request):
 
 
 @app.get("/v1/models", response_model=OpenAIModelList)
+@app.options("/v1/models")
 async def get_models():
     """
     Provides a list of available models in the OpenAI API format.
