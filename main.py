@@ -285,14 +285,83 @@ async def embeddings(request: Request):
 
 @app.options("/v1/models")
 async def options_models():
-    """Handle OPTIONS request for CORS preflight."""
+    """Handle OPTIONS request for CORS preflight and return model list."""
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
         "Access-Control-Max-Age": "86400"
     }
-    return JSONResponse(content={}, status_code=200, headers=headers)
+    
+    # Return the same model list as GET method
+    logger.info(f"OPTIONS /v1/models called. Current cache size: {len(model_cache)}")
+    
+    if not model_cache:
+        # Attempt to fetch if cache is empty (e.g., initial fetch failed)
+        logger.warning("Model cache is empty, attempting to fetch again.")
+        try:
+            await fetch_and_cache_models()
+        except HTTPException as e:
+             logger.error(f"HTTPException during model fetch: {e.status_code} - {e.detail}")
+             return JSONResponse(status_code=e.status_code, content={"detail": e.detail}, headers=headers)
+        except Exception as e:
+             logger.error(f"Unexpected error during fetch attempt in options_models: {e}")
+             error_response = {
+                 "error": {
+                     "message": "Internal server error fetching models.",
+                     "type": "server_error",
+                     "param": None,
+                     "code": "internal_error"
+                 }
+             }
+             return JSONResponse(content=error_response, status_code=500, headers=headers)
+
+        # Check again if cache is populated after the attempt
+        if not model_cache:
+             logger.error("Model cache is still empty after fetch attempt")
+             error_response = {
+                 "error": {
+                     "message": "Model list is currently unavailable.",
+                     "type": "server_error",
+                     "param": None,
+                     "code": "service_unavailable"
+                 }
+             }
+             return JSONResponse(content=error_response, status_code=503, headers=headers)
+
+    openai_models = []
+    for model in model_cache:
+        # Skip image generation models in the /v1/models endpoint response
+        # but keep them in the cache for image generation requests
+        if model.model_family.lower() in ["dall-e-3", "recraft", "ideogram"]:
+            continue
+                
+        # Include embedding models in the models list
+        # They will be shown in the models list but handled by the embeddings endpoint
+            
+        # Determine 'owned_by' based on model_family or handle if desired
+        owned_by = model.model_family # Simple example: use family name
+        if "openai" in model.handle.lower():
+            owned_by = "openai"
+        elif "anthropic" in model.handle.lower():
+            owned_by = "anthropic"
+        elif "fireworks" in model.handle.lower():
+             owned_by = "fireworks"
+        elif "gemini" in model.handle.lower():
+             owned_by = "google"
+        # Add more specific rules as needed
+
+        openai_models.append(
+            OpenAIModel(
+                id=model.model_version,
+                object="model",
+                created=int(time.time()),
+                owned_by=owned_by,
+            )
+        )
+
+    model_list = OpenAIModelList(data=openai_models)
+    return JSONResponse(content=model_list.model_dump(), status_code=200, headers=headers)
 
 
 @app.get("/v1/models", response_model=OpenAIModelList)
