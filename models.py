@@ -25,9 +25,9 @@ class OpenAIModel(BaseModel):
     """Represents the structure of a model object in OpenAI's /v1/models format."""
 
     id: str = Field(..., description="The model identifier, which can be referenced in the API endpoints.")
-    object: str = Field("model", description="The object type, which is always 'model'.")
+    object: str = Field(default="model", description="The object type, which is always 'model'.")
     created: int = Field(default_factory=lambda: int(time.time()), description="The Unix timestamp (in seconds) when the model was created.")
-    owned_by: str = Field("proxy", description="The organization that owns the model (inferred or fixed).")
+    owned_by: str = Field(default="proxy", description="The organization that owns the model (inferred or fixed).")
 
 
 class OpenAIModelList(BaseModel):

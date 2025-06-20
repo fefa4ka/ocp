@@ -263,8 +263,13 @@ async def embeddings(request: Request):
         return JSONResponse(content=error_response, status_code=500)
 
 
-@app.get("/v1/models", response_model=OpenAIModelList)
 @app.options("/v1/models")
+async def options_models():
+    """Handle OPTIONS request for CORS preflight."""
+    return JSONResponse(content={}, status_code=200)
+
+
+@app.get("/v1/models", response_model=OpenAIModelList)
 async def get_models():
     """
     Provides a list of available models in the OpenAI API format.
@@ -312,8 +317,9 @@ async def get_models():
         openai_models.append(
             OpenAIModel(
                 id=model.model_version,
+                object="model",
+                created=int(time.time()),
                 owned_by=owned_by,
-                # created timestamp could potentially be parsed if available in source
             )
         )
 
