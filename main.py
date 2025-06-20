@@ -62,22 +62,32 @@ async def fetch_and_cache_models():
     global model_cache, model_map
     logger.info(f"Fetching model list from: {settings.MODEL_LIST_URL}")
 
+    # Validate URL is configured
+    if not settings.MODEL_LIST_URL:
+        logger.error("MODEL_LIST_URL is not configured")
+        raise HTTPException(status_code=500, detail="MODEL_LIST_URL is not configured")
+
     headers = {}
     if settings.MODEL_LIST_AUTH_TOKEN:
         headers["Authorization"] = f"OAuth {settings.MODEL_LIST_AUTH_TOKEN}"
         logger.info("Using OAuth token for model list request.")
     else:
-        logger.info("No auth token found for model list request.")
+        logger.warning("No auth token found for model list request.")
 
-
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         try:
+            logger.info(f"Making request to {settings.MODEL_LIST_URL} with headers: {list(headers.keys())}")
             response = await client.get(settings.MODEL_LIST_URL, headers=headers)
+            logger.info(f"Response status: {response.status_code}")
+            logger.debug(f"Response headers: {dict(response.headers)}")
+            
             response.raise_for_status()  # Raise an exception for bad status codes
             source_data = response.json()
+            logger.debug(f"Raw response data keys: {list(source_data.keys()) if isinstance(source_data, dict) else 'Not a dict'}")
 
             # Validate data using Pydantic, expecting {"models": [...]}
             validated_source_list = SourceModelList.model_validate(source_data)
+            logger.info(f"Validated {len(validated_source_list.models)} models from source")
 
             # Filter out only models with handle "unavailable"
             filtered_models = [
@@ -93,14 +103,24 @@ async def fetch_and_cache_models():
             model_cache = filtered_models
             model_map = {model.model_version: model for model in model_cache}
             logger.info(f"Successfully fetched and cached {len(model_cache)} models.")
+            
+            # Log first few model IDs for verification
+            if model_cache:
+                sample_models = [m.model_version for m in model_cache[:5]]
+                logger.info(f"Sample model IDs: {sample_models}")
 
         except httpx.RequestError as e:
-            logger.error(f"Error fetching model list: {e}")
+            logger.error(f"Network error fetching model list: {e}")
             # Keep stale cache if fetch fails, or handle as needed
             if not model_cache: # If cache is empty and fetch failed, raise error
                  raise HTTPException(status_code=503, detail=f"Could not fetch model list from source: {e}")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error fetching model list: {e.response.status_code} - {e.response.text}")
+            if not model_cache:
+                raise HTTPException(status_code=503, detail=f"Model list service returned {e.response.status_code}")
         except Exception as e:
             logger.error(f"Error processing model list: {e}")
+            logger.exception("Full traceback:")
             # Keep stale cache if processing fails
             if not model_cache:
                 raise HTTPException(status_code=500, detail=f"Error processing model list: {e}")
@@ -281,13 +301,17 @@ async def get_models():
     Provides a list of available models in the OpenAI API format.
     Fetches and transforms the list from the configured source URL.
     """
+    logger.info(f"GET /v1/models called. Current cache size: {len(model_cache)}")
+    logger.info(f"MODEL_LIST_URL: {settings.MODEL_LIST_URL}")
+    logger.info(f"MODEL_LIST_AUTH_TOKEN configured: {'Yes' if settings.MODEL_LIST_AUTH_TOKEN else 'No'}")
+    
     if not model_cache:
         # Attempt to fetch if cache is empty (e.g., initial fetch failed)
         logger.warning("Model cache is empty, attempting to fetch again.")
         try:
             await fetch_and_cache_models()
         except HTTPException as e:
-             # Return the HTTPException directly if fetch fails again
+             logger.error(f"HTTPException during model fetch: {e.status_code} - {e.detail}")
              return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
         except Exception as e:
              logger.error(f"Unexpected error during fetch attempt in get_models: {e}")
@@ -295,6 +319,7 @@ async def get_models():
 
         # Check again if cache is populated after the attempt
         if not model_cache:
+             logger.error("Model cache is still empty after fetch attempt")
              raise HTTPException(status_code=503, detail="Model list is currently unavailable.")
 
 
