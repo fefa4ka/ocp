@@ -896,7 +896,7 @@ async def chat_completions(request: Request):
                                             logger.debug(f"Parsed Anthropic event: {current_event}, data: {event_data}")
 
                                             openai_chunk = transform_anthropic_stream_chunk_to_openai(
-                                                current_event, event_data, openai_chunk_id, requested_model
+                                                current_event, event_data, openai_chunk_id, requested_model, anthropic_tool_state
                                             )
 
                                             if openai_chunk:
@@ -1509,11 +1509,13 @@ def transform_anthropic_response_to_openai(anthropic_data: Dict[str, Any], reque
 
 
 def transform_anthropic_stream_chunk_to_openai(
-    event_type: str, event_data: Dict[str, Any], chunk_id: str, model_id: str
+    event_type: str, event_data: Dict[str, Any], chunk_id: str,  model_id: str, tool_state: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
     """
     Transforms a parsed Anthropic SSE event (type and data) into an OpenAI
     Chat Completion Chunk dictionary. Returns None if the event doesn't map.
+    
+    tool_state: Dictionary to track tool call information across events
     """
     logger.debug(f"Transforming Anthropic event: {event_type}")
     openai_chunk = {
@@ -1544,16 +1546,28 @@ def transform_anthropic_stream_chunk_to_openai(
         elif event_type == "content_block_start":
             # This event signals the start of a content block (text or tool use)
             content_block = event_data.get("content_block", {})
+            block_index = event_data.get("index", 0)
+            
             if content_block.get("type") == "text":
                 # Start of text content block - no specific action needed for OpenAI format
                 # The actual text will come in content_block_delta events
                 logger.debug("Started text content block")
                 return None
             elif content_block.get("type") == "tool_use":
-                # Start of tool use block - we'll handle the complete tool call in content_block_stop
+                # Start of tool use block - store the tool info for later
                 tool_name = content_block.get("name", "")
                 tool_id = content_block.get("id", "")
-                logger.debug(f"Started tool use block: {tool_name} (ID: {tool_id})")
+                tool_input = content_block.get("input", {})
+                
+                # Store tool info in state, keyed by block index
+                tool_state[block_index] = {
+                    "id": tool_id,
+                    "name": tool_name,
+                    "input": tool_input,
+                    "accumulated_json": ""
+                }
+                
+                logger.debug(f"Started tool use block: {tool_name} (ID: {tool_id}) at index {block_index}")
                 return None
             else:
                 logger.debug(f"Started unknown content block type: {content_block.get('type')}")
@@ -1562,6 +1576,8 @@ def transform_anthropic_stream_chunk_to_openai(
         elif event_type == "content_block_delta":
             # This event contains the actual text changes or tool use updates
             delta_info = event_data.get("delta", {})
+            block_index = event_data.get("index", 0)
+            
             if delta_info.get("type") == "text_delta":
                 text_delta = delta_info.get("text", "")
                 if text_delta: # Only include content if there is text
@@ -1569,24 +1585,34 @@ def transform_anthropic_stream_chunk_to_openai(
                 else:
                      return None # No actual content change,  skip chunk
             elif delta_info.get("type") == "input_json_delta":
-                # Handle tool use input streaming
+                # Handle tool use input streaming - accumulate the JSON
                 partial_json = delta_info.get("partial_json", "")
-                if partial_json:
-                    # For tool calls, we need to accumulate the JSON and send it as tool_calls delta
-                    # This is complex as we need to track the tool call state across chunks
-                    # For now, we'll skip these deltas and handle complete tool calls in content_block_stop
-                    return None
+                if partial_json and block_index in tool_state:
+                    tool_state[block_index]["accumulated_json"] += partial_json
+                    logger.debug(f"Accumulated JSON for tool at index {block_index}: {tool_state[block_index]['accumulated_json']}")
+                return None
 
         elif event_type == "content_block_stop":
             # This event signals the end of a content block (text or tool use)
-            content_block = event_data.get("content_block", {})
-            if content_block.get("type") == "tool_use":
-                # Send tool call delta - extract the complete tool information
-                tool_id = content_block.get("id", f"call_{int(time.time())}")
-                tool_name = content_block.get("name", "")
-                tool_input = content_block.get("input", {})
+            block_index = event_data.get("index", 0)
+            
+            # Check if this is a tool use block we've been tracking
+            if block_index in tool_state:
+                tool_info = tool_state[block_index]
+                tool_id = tool_info["id"]
+                tool_name = tool_info["name"]
                 
-                logger.debug(f"Processing tool use block stop: {tool_name} (ID: {tool_id}) with input: {tool_input}")
+                # Parse the accumulated JSON input
+                try:
+                    if tool_info["accumulated_json"]:
+                        tool_input = json.loads(tool_info["accumulated_json"])
+                    else:
+                        tool_input = tool_info["input"]  # Use initial input if no JSON was accumulated
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse accumulated tool JSON: {tool_info['accumulated_json']}, error: {e}")
+                    tool_input = tool_info["input"]  # Fallback to initial input
+                
+                logger.debug(f"Processing tool use block stop: {tool_name} (ID: {tool_id}) with final input: {tool_input}")
                 
                 tool_call = {
                     "id": tool_id,
@@ -1597,6 +1623,10 @@ def transform_anthropic_stream_chunk_to_openai(
                     }
                 }
                 openai_chunk["choices"][0]["delta"] = {"tool_calls": [tool_call]}
+                
+                # Clean up the tool state
+                del tool_state[block_index]
+                
                 logger.debug(f"Sending tool call chunk: {openai_chunk}")
                 return openai_chunk
             else:
