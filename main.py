@@ -1581,16 +1581,23 @@ def transform_anthropic_stream_chunk_to_openai(
             # This event signals the end of a content block (text or tool use)
             content_block = event_data.get("content_block", {})
             if content_block.get("type") == "tool_use":
-                # Send tool call delta
+                # Send tool call delta - extract the complete tool information
+                tool_id = content_block.get("id", f"call_{int(time.time())}")
+                tool_name = content_block.get("name", "")
+                tool_input = content_block.get("input", {})
+                
+                logger.debug(f"Processing tool use block stop: {tool_name} (ID: {tool_id}) with input: {tool_input}")
+                
                 tool_call = {
-                    "id": content_block.get("id", f"call_{int(time.time())}"),
+                    "id": tool_id,
                     "type": "function",
                     "function": {
-                        "name": content_block.get("name", ""),
-                        "arguments": json.dumps(content_block.get("input", {}))
+                        "name": tool_name,
+                        "arguments": json.dumps(tool_input)
                     }
                 }
                 openai_chunk["choices"][0]["delta"] = {"tool_calls": [tool_call]}
+                logger.debug(f"Sending tool call chunk: {openai_chunk}")
                 return openai_chunk
             else:
                 # End of text block, no specific action needed
@@ -1613,6 +1620,8 @@ def transform_anthropic_stream_chunk_to_openai(
                  finish_reason = finish_reason_map.get(stop_reason, stop_reason)
                  openai_chunk["choices"][0]["finish_reason"] = finish_reason
                  openai_chunk["choices"][0]["delta"] = {} # Delta is empty for the final chunk
+                 
+                 logger.debug(f"Setting finish reason: {finish_reason} for stop_reason: {stop_reason}")
 
                  # Add usage info if available (OpenAI spec includes it in the *last* chunk)
                  # Note: Anthropic provides output tokens here, but not input tokens.
