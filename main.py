@@ -32,7 +32,7 @@ log_level_map = {
     "CRITICAL": logging.CRITICAL,
     "NONE": logging.CRITICAL + 1, # Effectively disable logging
 }
-log_level = log_level_map.get(log_level_str, logging.INFO) # Default to INFO if invalid
+log_level = log_level_map.get(log_level_str, logging.DEBUG) # Default to INFO if invalid
 
 # Configure basic logging
 logging.basicConfig(
@@ -80,7 +80,7 @@ async def fetch_and_cache_models():
             response = await client.get(settings.MODEL_LIST_URL, headers=headers)
             logger.info(f"Response status: {response.status_code}")
             logger.debug(f"Response headers: {dict(response.headers)}")
-            
+
             response.raise_for_status()  # Raise an exception for bad status codes
             source_data = response.json()
             logger.debug(f"Raw response data keys: {list(source_data.keys()) if isinstance(source_data, dict) else 'Not a dict'}")
@@ -103,7 +103,7 @@ async def fetch_and_cache_models():
             model_cache = filtered_models
             model_map = {model.model_version: model for model in model_cache}
             logger.info(f"Successfully fetched and cached {len(model_cache)} models.")
-            
+
             # Log first few model IDs for verification
             if model_cache:
                 sample_models = [m.model_version for m in model_cache[:5]]
@@ -292,10 +292,10 @@ async def options_models():
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
         "Access-Control-Max-Age": "86400"
     }
-    
+
     # Return the same model list as GET method
     logger.info(f"OPTIONS /v1/models called. Current cache size: {len(model_cache)}")
-    
+
     if not model_cache:
         # Attempt to fetch if cache is empty (e.g., initial fetch failed)
         logger.warning("Model cache is empty, attempting to fetch again.")
@@ -335,10 +335,10 @@ async def options_models():
         # but keep them in the cache for image generation requests
         if model.model_family.lower() in ["dall-e-3", "recraft", "ideogram"]:
             continue
-                
+
         # Include embedding models in the models list
         # They will be shown in the models list but handled by the embeddings endpoint
-            
+
         # Determine 'owned_by' based on model_family or handle if desired
         owned_by = model.model_family # Simple example: use family name
         if "openai" in model.handle.lower():
@@ -373,7 +373,7 @@ async def get_models():
     logger.info(f"GET /v1/models called. Current cache size: {len(model_cache)}")
     logger.info(f"MODEL_LIST_URL: {settings.MODEL_LIST_URL}")
     logger.info(f"MODEL_LIST_AUTH_TOKEN configured: {'Yes' if settings.MODEL_LIST_AUTH_TOKEN else 'No'}")
-    
+
     if not model_cache:
         # Attempt to fetch if cache is empty (e.g., initial fetch failed)
         logger.warning("Model cache is empty, attempting to fetch again.")
@@ -398,10 +398,10 @@ async def get_models():
         # but keep them in the cache for image generation requests
         if model.model_family.lower() in ["dall-e-3", "recraft", "ideogram"]:
             continue
-                
+
         # Include embedding models in the models list
         # They will be shown in the models list but handled by the embeddings endpoint
-            
+
         # Determine 'owned_by' based on model_family or handle if desired
         owned_by = model.model_family # Simple example: use family name
         if "openai" in model.handle.lower():
@@ -1197,21 +1197,21 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
     Handles tools, messages, and other parameters.
     """
     logger.debug("Transforming OpenAI request to Anthropic format.")
-    
+
     anthropic_request = {
         "model": openai_data.get("model", "claude-3-sonnet-20240229"),
         "messages": [],
         "max_tokens": openai_data.get("max_tokens", 4096)
     }
-    
+
     # Handle system message separately for Anthropic
     system_message = None
     messages = []
-    
+
     for msg in openai_data.get("messages", []):
         role = msg.get("role")
         content = msg.get("content")
-        
+
         if role == "system":
             system_message = content
         elif role in ["user", "assistant"]:
@@ -1219,11 +1219,11 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
             if role == "assistant" and "tool_calls" in msg:
                 # Convert OpenAI tool calls to Anthropic format
                 anthropic_content = []
-                
+
                 # Add text content if present
                 if content:
                     anthropic_content.append({"type": "text", "text": content})
-                
+
                 # Add tool use blocks
                 for i, tool_call in enumerate(msg["tool_calls"]):
                     if tool_call.get("type") == "function":
@@ -1231,17 +1231,17 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
                         tool_name = function.get("name", "")
                         tool_id = tool_call.get("id", f"tool_{int(time.time())}")
                         tool_args = function.get("arguments", "{}")
-                        
+
                         logger.debug(f"Processing tool call {i+1}: {tool_name} (ID: {tool_id})")
                         logger.debug(f"Tool call arguments: {tool_args}")
-                        
+
                         try:
                             parsed_args = json.loads(tool_args)
                             logger.debug(f"Parsed tool arguments: {parsed_args}")
                         except json.JSONDecodeError as e:
                             logger.error(f"Failed to parse tool arguments for {tool_name}: {e}")
                             parsed_args = {}
-                        
+
                         tool_use = {
                             "type": "tool_use",
                             "id": tool_id,
@@ -1251,7 +1251,7 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
                         anthropic_content.append(tool_use)
                     else:
                         logger.warning(f"Skipping tool call {i+1} with unsupported type: {tool_call.get('type')}")
-                
+
                 messages.append({
                     "role": "assistant",
                     "content": anthropic_content
@@ -1267,13 +1267,13 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
             tool_call_id = msg.get("tool_call_id")
             logger.debug(f"Processing tool result for tool call ID: {tool_call_id}")
             logger.debug(f"Tool result content: {content}")
-            
+
             tool_result = {
                 "type": "tool_result",
                 "tool_use_id": tool_call_id,
                 "content": content or ""
             }
-            
+
             # Find the last user message and append tool result, or create new user message
             if messages and messages[-1]["role"] == "user":
                 if isinstance(messages[-1]["content"], str):
@@ -1286,16 +1286,16 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
                     "content": [tool_result]
                 })
                 logger.debug(f"Created new user message with tool result")
-    
+
     anthropic_request["messages"] = messages
-    
+
     # Add system message if present
     if system_message:
         anthropic_request["system"] = system_message
-    
+
     # Handle tools (newer format) and functions (legacy format)
     anthropic_tools = []
-    
+
     # Handle newer 'tools' parameter
     if "tools" in openai_data and openai_data["tools"]:
         logger.debug(f"Processing {len(openai_data['tools'])} tools from OpenAI request")
@@ -1306,7 +1306,7 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
                 tool_description = function.get("description", "")
                 logger.debug(f"Tool {i+1}: {tool_name} - {tool_description}")
                 logger.debug(f"Tool {i+1} parameters: {function.get('parameters', {})}")
-                
+
                 anthropic_tool = {
                     "name": tool_name,
                     "description": tool_description,
@@ -1315,7 +1315,7 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
                 anthropic_tools.append(anthropic_tool)
             else:
                 logger.warning(f"Skipping tool {i+1} with unsupported type: {tool.get('type')}")
-    
+
     # Handle legacy 'functions' parameter
     elif "functions" in openai_data and openai_data["functions"]:
         logger.debug(f"Processing {len(openai_data['functions'])} legacy functions from OpenAI request")
@@ -1324,14 +1324,14 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
             function_description = function.get("description", "")
             logger.debug(f"Function {i+1}: {function_name} - {function_description}")
             logger.debug(f"Function {i+1} parameters: {function.get('parameters', {})}")
-            
+
             anthropic_tool = {
                 "name": function_name,
                 "description": function_description,
                 "input_schema": function.get("parameters", {})
             }
             anthropic_tools.append(anthropic_tool)
-    
+
     if anthropic_tools:
         anthropic_request["tools"] = anthropic_tools
         logger.debug(f"Added {len(anthropic_tools)} tools to Anthropic request")
@@ -1339,7 +1339,7 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
             logger.debug(f"Anthropic tool: {tool['name']} with schema keys: {list(tool['input_schema'].keys())}")
     else:
         logger.debug("No tools found in OpenAI request")
-    
+
     # Handle tool_choice and function_call (legacy)
     if "tool_choice" in openai_data:
         tool_choice = openai_data["tool_choice"]
@@ -1380,20 +1380,20 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
             logger.warning(f"Unhandled function_call format: {function_call}")
     else:
         logger.debug("No tool_choice or function_call specified in OpenAI request")
-    
+
     # Map other parameters
     if "temperature" in openai_data:
         anthropic_request["temperature"] = openai_data["temperature"]
-    
+
     if "top_p" in openai_data:
         anthropic_request["top_p"] = openai_data["top_p"]
-    
+
     if "stop" in openai_data:
         anthropic_request["stop_sequences"] = openai_data["stop"]
-    
+
     if "stream" in openai_data:
         anthropic_request["stream"] = openai_data["stream"]
-    
+
     logger.debug(f"Transformed Anthropic request: {anthropic_request}")
     return anthropic_request
 
@@ -1430,7 +1430,7 @@ def transform_anthropic_response_to_openai(anthropic_data: Dict[str, Any], reque
         # Handle both text and tool use content blocks
         message_content = ""
         tool_calls = []
-        
+
         if anthropic_content and isinstance(anthropic_content, list):
             for content_block in anthropic_content:
                 if content_block.get("type") == "text":
@@ -1466,11 +1466,11 @@ def transform_anthropic_response_to_openai(anthropic_data: Dict[str, Any], reque
             "role": anthropic_role,
             "content": message_content,
         }
-        
+
         # Add tool calls if present
         if tool_calls:
             choice_message["tool_calls"] = tool_calls
-        
+
         openai_response = {
             "id": f"chatcmpl-{anthropic_id}", # Prefix Anthropic ID
             "object": "chat.completion",
@@ -2171,7 +2171,7 @@ def transform_cohere_stream_chunk_to_openai(
 
         # Check for event type (older format)
         event_type = cohere_chunk.get("event_type")
-        
+
         # Check for type (newer format)
         chunk_type = cohere_chunk.get("type")
 
@@ -2180,7 +2180,7 @@ def transform_cohere_stream_chunk_to_openai(
             # First chunk - send role
             openai_chunk["choices"][0]["delta"] = {"role": "assistant"}
             return openai_chunk
-            
+
         elif chunk_type == "content-delta":
             # Content chunk in newer format
             # Extract text from the nested structure
@@ -2191,17 +2191,17 @@ def transform_cohere_stream_chunk_to_openai(
                     content = message["content"]
                     if isinstance(content, dict) and "text" in content:
                         text = content["text"]
-            
+
             if text:
                 # Filter code block markers if present
                 if "```" in text:
                     text = text.replace("```json", "").replace("```", "")
-                
+
                 openai_chunk["choices"][0]["delta"] = {"content": text}
                 return openai_chunk
             else:
                 return None  # Skip empty content
-                
+
         elif chunk_type == "message-end":
             # Final chunk with finish reason
             finish_reason_map = {
@@ -2211,35 +2211,35 @@ def transform_cohere_stream_chunk_to_openai(
                 "CANCELLED": "stop",
                 "SAFETY": "content_filter"
             }
-            
+
             finish_reason = None
             usage_data = None
-            
+
             if "delta" in cohere_chunk:
                 delta = cohere_chunk["delta"]
                 finish_reason = delta.get("finish_reason")
                 usage_data = delta.get("usage")
-            
+
             if finish_reason:
                 mapped_reason = finish_reason_map.get(finish_reason, "stop")
                 openai_chunk["choices"][0]["delta"] = {}
                 openai_chunk["choices"][0]["finish_reason"] = mapped_reason
-                
+
                 # Add usage if available
                 if usage_data:
                     openai_chunk["usage"] = {
                         "prompt_tokens": usage_data.get("tokens", {}).get("input_tokens", 0),
                         "completion_tokens": usage_data.get("tokens", {}).get("output_tokens", 0),
                         "total_tokens": (
-                            usage_data.get("tokens", {}).get("input_tokens", 0) + 
+                            usage_data.get("tokens", {}).get("input_tokens", 0) +
                             usage_data.get("tokens", {}).get("output_tokens", 0)
                         )
                     }
-                
+
                 return openai_chunk
             else:
                 return None
-                
+
         # Handle older Cohere streaming format
         elif event_type == "stream-start":
             # First chunk - send role
@@ -2255,7 +2255,7 @@ def transform_cohere_stream_chunk_to_openai(
                     # Replace code block markers with empty string
                     text = text.replace("```json", "").replace("```", "")
                     logger.debug(f"Removed code block markers from stream chunk: {text}")
-                
+
                 openai_chunk["choices"][0]["delta"] = {"content": text}
                 return openai_chunk
             else:
@@ -2301,7 +2301,7 @@ def transform_cohere_stream_chunk_to_openai(
                     # Filter code block markers
                     if "```" in text:
                         text = text.replace("```json", "").replace("```", "")
-                    
+
                     openai_chunk["choices"][0]["delta"] = {"content": text}
                     return openai_chunk
                 else:
@@ -2314,7 +2314,7 @@ def transform_cohere_stream_chunk_to_openai(
                 # Filter code block markers
                 if "```" in generation:
                     generation = generation.replace("```json", "").replace("```", "")
-                
+
                 openai_chunk["choices"][0]["delta"] = {"content": generation}
                 return openai_chunk
             else:
@@ -2328,7 +2328,7 @@ def transform_cohere_stream_chunk_to_openai(
                 # Filter code block markers
                 if "```" in text:
                     text = text.replace("```json", "").replace("```", "")
-                
+
                 openai_chunk["choices"][0]["delta"] = {"content": text}
                 return openai_chunk
             else:
@@ -2340,11 +2340,11 @@ def transform_cohere_stream_chunk_to_openai(
             for key, value in cohere_chunk.items():
                 if isinstance(value, str) and len(value) > 0 and key not in ["event_type", "finish_reason", "type"]:
                     logger.debug(f"Found potential text content in field '{key}': {value}")
-                    
+
                     # Filter code block markers if present
                     if "```" in value:
                         value = value.replace("```json", "").replace("```", "")
-                    
+
                     openai_chunk["choices"][0]["delta"] = {"content": value}
                     return openai_chunk
 
