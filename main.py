@@ -739,13 +739,9 @@ async def chat_completions(request: Request):
         # Modify payload_for_backend if needed based on the target backend
         logger.debug(f"Checking handle '{handle}' for API specific adjustments.")
         if "/anthropic/" in handle.lower():
-            # Adjust payload_for_backend in place for Anthropic
-            if "max_tokens" not in payload_for_backend or payload_for_backend.get("max_tokens") is None:
-                default_max_tokens = 4096 # Set a reasonable default for Anthropic
-                logger.warning(f"Anthropic request for model '{model_id}' missing 'max_tokens'. Applying default: {default_max_tokens}")
-                payload_for_backend["max_tokens"] = default_max_tokens
-            # Add other Anthropic-specific transformations here if needed
-            logger.debug(f"Anthropic payload for backend after adjustments for model '{model_id}': {payload_for_backend}")
+            # Transform payload_for_backend for Anthropic
+            payload_for_backend = transform_openai_request_to_anthropic(payload_for_backend)
+            logger.debug(f"Anthropic payload for backend after transformation for model '{model_id}': {payload_for_backend}")
         elif "/google/" in handle.lower(): # Check for /google/ instead of /gemini/
             # 5. Transform payload_for_backend for Gemini
             # This replaces the variable with the transformed dictionary
@@ -1195,6 +1191,133 @@ async def chat_completions(request: Request):
 
 
 # --- Helper Functions ---
+def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Transforms an OpenAI Chat Completion request to an Anthropic API request.
+    Handles tools, messages, and other parameters.
+    """
+    logger.debug("Transforming OpenAI request to Anthropic format.")
+    
+    anthropic_request = {
+        "model": openai_data.get("model", "claude-3-sonnet-20240229"),
+        "messages": [],
+        "max_tokens": openai_data.get("max_tokens", 4096)
+    }
+    
+    # Handle system message separately for Anthropic
+    system_message = None
+    messages = []
+    
+    for msg in openai_data.get("messages", []):
+        role = msg.get("role")
+        content = msg.get("content")
+        
+        if role == "system":
+            system_message = content
+        elif role in ["user", "assistant"]:
+            # Handle tool calls in assistant messages
+            if role == "assistant" and "tool_calls" in msg:
+                # Convert OpenAI tool calls to Anthropic format
+                anthropic_content = []
+                
+                # Add text content if present
+                if content:
+                    anthropic_content.append({"type": "text", "text": content})
+                
+                # Add tool use blocks
+                for tool_call in msg["tool_calls"]:
+                    if tool_call.get("type") == "function":
+                        function = tool_call.get("function", {})
+                        tool_use = {
+                            "type": "tool_use",
+                            "id": tool_call.get("id", f"tool_{int(time.time())}"),
+                            "name": function.get("name", ""),
+                            "input": json.loads(function.get("arguments", "{}"))
+                        }
+                        anthropic_content.append(tool_use)
+                
+                messages.append({
+                    "role": "assistant",
+                    "content": anthropic_content
+                })
+            else:
+                # Regular message
+                messages.append({
+                    "role": role,
+                    "content": content or ""
+                })
+        elif role == "tool":
+            # Convert tool response to Anthropic format
+            tool_call_id = msg.get("tool_call_id")
+            tool_result = {
+                "type": "tool_result",
+                "tool_use_id": tool_call_id,
+                "content": content or ""
+            }
+            
+            # Find the last user message and append tool result, or create new user message
+            if messages and messages[-1]["role"] == "user":
+                if isinstance(messages[-1]["content"], str):
+                    messages[-1]["content"] = [{"type": "text", "text": messages[-1]["content"]}]
+                messages[-1]["content"].append(tool_result)
+            else:
+                messages.append({
+                    "role": "user",
+                    "content": [tool_result]
+                })
+    
+    anthropic_request["messages"] = messages
+    
+    # Add system message if present
+    if system_message:
+        anthropic_request["system"] = system_message
+    
+    # Handle tools
+    if "tools" in openai_data and openai_data["tools"]:
+        anthropic_tools = []
+        for tool in openai_data["tools"]:
+            if tool.get("type") == "function":
+                function = tool.get("function", {})
+                anthropic_tool = {
+                    "name": function.get("name", ""),
+                    "description": function.get("description", ""),
+                    "input_schema": function.get("parameters", {})
+                }
+                anthropic_tools.append(anthropic_tool)
+        
+        if anthropic_tools:
+            anthropic_request["tools"] = anthropic_tools
+    
+    # Handle tool_choice
+    if "tool_choice" in openai_data:
+        tool_choice = openai_data["tool_choice"]
+        if tool_choice == "auto":
+            anthropic_request["tool_choice"] = {"type": "auto"}
+        elif tool_choice == "none":
+            anthropic_request["tool_choice"] = {"type": "none"}
+        elif isinstance(tool_choice, dict) and "function" in tool_choice:
+            anthropic_request["tool_choice"] = {
+                "type": "tool",
+                "name": tool_choice["function"]["name"]
+            }
+    
+    # Map other parameters
+    if "temperature" in openai_data:
+        anthropic_request["temperature"] = openai_data["temperature"]
+    
+    if "top_p" in openai_data:
+        anthropic_request["top_p"] = openai_data["top_p"]
+    
+    if "stop" in openai_data:
+        anthropic_request["stop_sequences"] = openai_data["stop"]
+    
+    if "stream" in openai_data:
+        anthropic_request["stream"] = openai_data["stream"]
+    
+    logger.debug(f"Transformed Anthropic request: {anthropic_request}")
+    return anthropic_request
+
+
 def transform_anthropic_response_to_openai(anthropic_data: Dict[str, Any], requested_model_id: str) -> Dict[str, Any]:
     """
     Transforms a non-streaming Anthropic API response (/v1/messages) into the
@@ -1224,12 +1347,25 @@ def transform_anthropic_response_to_openai(anthropic_data: Dict[str, Any], reque
         anthropic_stop_reason = anthropic_response.get("stop_reason")
 
         # --- Map Content ---
-        # Assuming the first content block is the primary text response
+        # Handle both text and tool use content blocks
         message_content = ""
-        if anthropic_content and isinstance(anthropic_content, list) and len(anthropic_content) > 0:
-            first_content_block = anthropic_content[0]
-            if first_content_block.get("type") == "text":
-                message_content = first_content_block.get("text", "")
+        tool_calls = []
+        
+        if anthropic_content and isinstance(anthropic_content, list):
+            for content_block in anthropic_content:
+                if content_block.get("type") == "text":
+                    message_content += content_block.get("text", "")
+                elif content_block.get("type") == "tool_use":
+                    # Convert Anthropic tool use to OpenAI tool call format
+                    tool_call = {
+                        "id": content_block.get("id", f"call_{int(time.time())}"),
+                        "type": "function",
+                        "function": {
+                            "name": content_block.get("name", ""),
+                            "arguments": json.dumps(content_block.get("input", {}))
+                        }
+                    }
+                    tool_calls.append(tool_call)
 
         # --- Map Finish Reason ---
         finish_reason_map = {
@@ -1246,6 +1382,15 @@ def transform_anthropic_response_to_openai(anthropic_data: Dict[str, Any], reque
         total_tokens = prompt_tokens + completion_tokens
 
         # --- Construct OpenAI Response ---
+        choice_message = {
+            "role": anthropic_role,
+            "content": message_content,
+        }
+        
+        # Add tool calls if present
+        if tool_calls:
+            choice_message["tool_calls"] = tool_calls
+        
         openai_response = {
             "id": f"chatcmpl-{anthropic_id}", # Prefix Anthropic ID
             "object": "chat.completion",
@@ -1254,10 +1399,7 @@ def transform_anthropic_response_to_openai(anthropic_data: Dict[str, Any], reque
             "choices": [
                 {
                     "index": 0,
-                    "message": {
-                        "role": anthropic_role,
-                        "content": message_content,
-                    },
+                    "message": choice_message,
                     "finish_reason": finish_reason,
                     "logprobs": None, # Anthropic doesn't provide logprobs in this basic response
                 }
@@ -1320,14 +1462,41 @@ def transform_anthropic_stream_chunk_to_openai(
             # OpenAI clients usually ignore usage in intermediate chunks.
 
         elif event_type == "content_block_delta":
-            # This event contains the actual text changes
+            # This event contains the actual text changes or tool use updates
             delta_info = event_data.get("delta", {})
             if delta_info.get("type") == "text_delta":
                 text_delta = delta_info.get("text", "")
                 if text_delta: # Only include content if there is text
                      openai_chunk["choices"][0]["delta"] = {"content": text_delta}
                 else:
-                     return None # No actual content change, skip chunk
+                     return None # No actual content change,  skip chunk
+            elif delta_info.get("type") == "input_json_delta":
+                # Handle tool use input streaming
+                partial_json = delta_info.get("partial_json", "")
+                if partial_json:
+                    # For tool calls, we need to accumulate the JSON and send it as tool_calls delta
+                    # This is complex as we need to track the tool call state across chunks
+                    # For now, we'll skip these deltas and handle complete tool calls in content_block_stop
+                    return None
+
+        elif event_type == "content_block_stop":
+            # This event signals the end of a content block (text or tool use)
+            content_block = event_data.get("content_block", {})
+            if content_block.get("type") == "tool_use":
+                # Send tool call delta
+                tool_call = {
+                    "id": content_block.get("id", f"call_{int(time.time())}"),
+                    "type": "function",
+                    "function": {
+                        "name": content_block.get("name", ""),
+                        "arguments": json.dumps(content_block.get("input", {}))
+                    }
+                }
+                openai_chunk["choices"][0]["delta"] = {"tool_calls": [tool_call]}
+                return openai_chunk
+            else:
+                # End of text block, no specific action needed
+                return None
 
         elif event_type == "message_delta":
             # This event signals the end of the message and provides stop reason/usage
@@ -1341,7 +1510,7 @@ def transform_anthropic_stream_chunk_to_openai(
                      "end_turn": "stop",
                      "max_tokens": "length",
                      "stop_sequence": "stop",
-                     # Add other mappings if needed: tool_use?
+                     "tool_use": "tool_calls",  # Map tool_use to tool_calls
                  }
                  finish_reason = finish_reason_map.get(stop_reason, stop_reason)
                  openai_chunk["choices"][0]["finish_reason"] = finish_reason

@@ -55,6 +55,8 @@ class OpenAIChatCompletionRequest(BaseModel):
     frequency_penalty: Optional[float] = None
     logit_bias: Optional[Dict[str, float]] = None
     user: Optional[str] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     # Include other potential fields based on OpenAI spec or backend needs
 
 
