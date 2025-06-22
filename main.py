@@ -1272,9 +1272,11 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
     if system_message:
         anthropic_request["system"] = system_message
     
-    # Handle tools
+    # Handle tools (newer format) and functions (legacy format)
+    anthropic_tools = []
+    
+    # Handle newer 'tools' parameter
     if "tools" in openai_data and openai_data["tools"]:
-        anthropic_tools = []
         for tool in openai_data["tools"]:
             if tool.get("type") == "function":
                 function = tool.get("function", {})
@@ -1284,11 +1286,21 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
                     "input_schema": function.get("parameters", {})
                 }
                 anthropic_tools.append(anthropic_tool)
-        
-        if anthropic_tools:
-            anthropic_request["tools"] = anthropic_tools
     
-    # Handle tool_choice
+    # Handle legacy 'functions' parameter
+    elif "functions" in openai_data and openai_data["functions"]:
+        for function in openai_data["functions"]:
+            anthropic_tool = {
+                "name": function.get("name", ""),
+                "description": function.get("description", ""),
+                "input_schema": function.get("parameters", {})
+            }
+            anthropic_tools.append(anthropic_tool)
+    
+    if anthropic_tools:
+        anthropic_request["tools"] = anthropic_tools
+    
+    # Handle tool_choice and function_call (legacy)
     if "tool_choice" in openai_data:
         tool_choice = openai_data["tool_choice"]
         if tool_choice == "auto":
@@ -1299,6 +1311,18 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
             anthropic_request["tool_choice"] = {
                 "type": "tool",
                 "name": tool_choice["function"]["name"]
+            }
+    elif "function_call" in openai_data:
+        # Handle legacy function_call parameter
+        function_call = openai_data["function_call"]
+        if function_call == "auto":
+            anthropic_request["tool_choice"] = {"type": "auto"}
+        elif function_call == "none":
+            anthropic_request["tool_choice"] = {"type": "none"}
+        elif isinstance(function_call, dict) and "name" in function_call:
+            anthropic_request["tool_choice"] = {
+                "type": "tool",
+                "name": function_call["name"]
             }
     
     # Map other parameters

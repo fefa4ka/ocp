@@ -57,6 +57,8 @@ class OpenAIChatCompletionRequest(BaseModel):
     user: Optional[str] = None
     tools: Optional[List[Dict[str, Any]]] = None
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None
+    functions: Optional[List[Dict[str, Any]]] = None  # Legacy parameter
+    function_call: Optional[Union[str, Dict[str, Any]]] = None  # Legacy parameter
     # Include other potential fields based on OpenAI spec or backend needs
 
 
