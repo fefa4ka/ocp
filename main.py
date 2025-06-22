@@ -1225,16 +1225,32 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
                     anthropic_content.append({"type": "text", "text": content})
                 
                 # Add tool use blocks
-                for tool_call in msg["tool_calls"]:
+                for i, tool_call in enumerate(msg["tool_calls"]):
                     if tool_call.get("type") == "function":
                         function = tool_call.get("function", {})
+                        tool_name = function.get("name", "")
+                        tool_id = tool_call.get("id", f"tool_{int(time.time())}")
+                        tool_args = function.get("arguments", "{}")
+                        
+                        logger.debug(f"Processing tool call {i+1}: {tool_name} (ID: {tool_id})")
+                        logger.debug(f"Tool call arguments: {tool_args}")
+                        
+                        try:
+                            parsed_args = json.loads(tool_args)
+                            logger.debug(f"Parsed tool arguments: {parsed_args}")
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to parse tool arguments for {tool_name}: {e}")
+                            parsed_args = {}
+                        
                         tool_use = {
                             "type": "tool_use",
-                            "id": tool_call.get("id", f"tool_{int(time.time())}"),
-                            "name": function.get("name", ""),
-                            "input": json.loads(function.get("arguments", "{}"))
+                            "id": tool_id,
+                            "name": tool_name,
+                            "input": parsed_args
                         }
                         anthropic_content.append(tool_use)
+                    else:
+                        logger.warning(f"Skipping tool call {i+1} with unsupported type: {tool_call.get('type')}")
                 
                 messages.append({
                     "role": "assistant",
@@ -1249,6 +1265,9 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
         elif role == "tool":
             # Convert tool response to Anthropic format
             tool_call_id = msg.get("tool_call_id")
+            logger.debug(f"Processing tool result for tool call ID: {tool_call_id}")
+            logger.debug(f"Tool result content: {content}")
+            
             tool_result = {
                 "type": "tool_result",
                 "tool_use_id": tool_call_id,
@@ -1260,11 +1279,13 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
                 if isinstance(messages[-1]["content"], str):
                     messages[-1]["content"] = [{"type": "text", "text": messages[-1]["content"]}]
                 messages[-1]["content"].append(tool_result)
+                logger.debug(f"Appended tool result to existing user message")
             else:
                 messages.append({
                     "role": "user",
                     "content": [tool_result]
                 })
+                logger.debug(f"Created new user message with tool result")
     
     anthropic_request["messages"] = messages
     
@@ -1277,53 +1298,88 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
     
     # Handle newer 'tools' parameter
     if "tools" in openai_data and openai_data["tools"]:
-        for tool in openai_data["tools"]:
+        logger.debug(f"Processing {len(openai_data['tools'])} tools from OpenAI request")
+        for i, tool in enumerate(openai_data["tools"]):
             if tool.get("type") == "function":
                 function = tool.get("function", {})
+                tool_name = function.get("name", "")
+                tool_description = function.get("description", "")
+                logger.debug(f"Tool {i+1}: {tool_name} - {tool_description}")
+                logger.debug(f"Tool {i+1} parameters: {function.get('parameters', {})}")
+                
                 anthropic_tool = {
-                    "name": function.get("name", ""),
-                    "description": function.get("description", ""),
+                    "name": tool_name,
+                    "description": tool_description,
                     "input_schema": function.get("parameters", {})
                 }
                 anthropic_tools.append(anthropic_tool)
+            else:
+                logger.warning(f"Skipping tool {i+1} with unsupported type: {tool.get('type')}")
     
     # Handle legacy 'functions' parameter
     elif "functions" in openai_data and openai_data["functions"]:
-        for function in openai_data["functions"]:
+        logger.debug(f"Processing {len(openai_data['functions'])} legacy functions from OpenAI request")
+        for i, function in enumerate(openai_data["functions"]):
+            function_name = function.get("name", "")
+            function_description = function.get("description", "")
+            logger.debug(f"Function {i+1}: {function_name} - {function_description}")
+            logger.debug(f"Function {i+1} parameters: {function.get('parameters', {})}")
+            
             anthropic_tool = {
-                "name": function.get("name", ""),
-                "description": function.get("description", ""),
+                "name": function_name,
+                "description": function_description,
                 "input_schema": function.get("parameters", {})
             }
             anthropic_tools.append(anthropic_tool)
     
     if anthropic_tools:
         anthropic_request["tools"] = anthropic_tools
+        logger.debug(f"Added {len(anthropic_tools)} tools to Anthropic request")
+        for tool in anthropic_tools:
+            logger.debug(f"Anthropic tool: {tool['name']} with schema keys: {list(tool['input_schema'].keys())}")
+    else:
+        logger.debug("No tools found in OpenAI request")
     
     # Handle tool_choice and function_call (legacy)
     if "tool_choice" in openai_data:
         tool_choice = openai_data["tool_choice"]
+        logger.debug(f"Processing tool_choice: {tool_choice}")
         if tool_choice == "auto":
             anthropic_request["tool_choice"] = {"type": "auto"}
+            logger.debug("Set Anthropic tool_choice to auto")
         elif tool_choice == "none":
             anthropic_request["tool_choice"] = {"type": "none"}
+            logger.debug("Set Anthropic tool_choice to none")
         elif isinstance(tool_choice, dict) and "function" in tool_choice:
+            selected_function = tool_choice["function"]["name"]
             anthropic_request["tool_choice"] = {
                 "type": "tool",
-                "name": tool_choice["function"]["name"]
+                "name": selected_function
             }
+            logger.debug(f"Set Anthropic tool_choice to specific tool: {selected_function}")
+        else:
+            logger.warning(f"Unhandled tool_choice format: {tool_choice}")
     elif "function_call" in openai_data:
         # Handle legacy function_call parameter
         function_call = openai_data["function_call"]
+        logger.debug(f"Processing legacy function_call: {function_call}")
         if function_call == "auto":
             anthropic_request["tool_choice"] = {"type": "auto"}
+            logger.debug("Set Anthropic tool_choice to auto (from legacy function_call)")
         elif function_call == "none":
             anthropic_request["tool_choice"] = {"type": "none"}
+            logger.debug("Set Anthropic tool_choice to none (from legacy function_call)")
         elif isinstance(function_call, dict) and "name" in function_call:
+            selected_function = function_call["name"]
             anthropic_request["tool_choice"] = {
                 "type": "tool",
-                "name": function_call["name"]
+                "name": selected_function
             }
+            logger.debug(f"Set Anthropic tool_choice to specific tool: {selected_function} (from legacy function_call)")
+        else:
+            logger.warning(f"Unhandled function_call format: {function_call}")
+    else:
+        logger.debug("No tool_choice or function_call specified in OpenAI request")
     
     # Map other parameters
     if "temperature" in openai_data:
