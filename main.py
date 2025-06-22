@@ -1541,6 +1541,24 @@ def transform_anthropic_stream_chunk_to_openai(
             # We could store it and add it to the *last* chunk if needed, but
             # OpenAI clients usually ignore usage in intermediate chunks.
 
+        elif event_type == "content_block_start":
+            # This event signals the start of a content block (text or tool use)
+            content_block = event_data.get("content_block", {})
+            if content_block.get("type") == "text":
+                # Start of text content block - no specific action needed for OpenAI format
+                # The actual text will come in content_block_delta events
+                logger.debug("Started text content block")
+                return None
+            elif content_block.get("type") == "tool_use":
+                # Start of tool use block - we'll handle the complete tool call in content_block_stop
+                tool_name = content_block.get("name", "")
+                tool_id = content_block.get("id", "")
+                logger.debug(f"Started tool use block: {tool_name} (ID: {tool_id})")
+                return None
+            else:
+                logger.debug(f"Started unknown content block type: {content_block.get('type')}")
+                return None
+
         elif event_type == "content_block_delta":
             # This event contains the actual text changes or tool use updates
             delta_info = event_data.get("delta", {})
