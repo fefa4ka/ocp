@@ -804,6 +804,8 @@ async def chat_completions(request: Request):
             else: # Default/OpenAI compatible
                 openai_chunk_id = f"chatcmpl-proxy-{int(time.time())}"
 
+            # State tracking for Anthropic tool calls
+            anthropic_tool_state = {}
 
             async with httpx.AsyncClient() as stream_client:
                 try:
