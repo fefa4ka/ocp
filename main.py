@@ -694,6 +694,21 @@ async def chat_completions(request: Request):
 
         # --- Forward the request ---
         logger.info(f"Forwarding request for model '{model_id}' to {target_url}. Streaming: {is_streaming}")
+        
+        # Debug log the final payload being sent to backend
+        if "tools" in payload_for_backend or "functions" in payload_for_backend:
+            tools_count = len(payload_for_backend.get("tools", [])) + len(payload_for_backend.get("functions", []))
+            logger.debug(f"Sending {tools_count} tools/functions to backend for model '{model_id}'")
+            
+            # Log each tool/function name being sent
+            for i, tool in enumerate(payload_for_backend.get("tools", [])):
+                if tool.get("type") == "function":
+                    tool_name = tool.get("function", {}).get("name", "")
+                    logger.debug(f"Backend tool {i+1}: '{tool_name}'")
+            
+            for i, function in enumerate(payload_for_backend.get("functions", [])):
+                function_name = function.get("name", "")
+                logger.debug(f"Backend function {i+1}: '{function_name}'")
 
         # Define the stream generator here, accepting necessary parameters
         async def stream_generator(
@@ -1228,6 +1243,15 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
                 tool_description = function.get("description", "")
                 logger.debug(f"Tool {i+1}: {tool_name} - {tool_description}")
                 logger.debug(f"Tool {i+1} parameters: {function.get('parameters', {})}")
+                
+                # Debug log for tool name validation
+                import re
+                name_pattern = r'^[a-zA-Z0-9_-]+$'
+                if not re.match(name_pattern, tool_name):
+                    logger.error(f"Tool {i+1} name '{tool_name}' does not match required pattern {name_pattern}")
+                    logger.error(f"Tool {i+1} full function object: {function}")
+                else:
+                    logger.debug(f"Tool {i+1} name '{tool_name}' matches required pattern")
 
                 anthropic_tool = {
                     "name": tool_name,
@@ -1246,6 +1270,15 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
             function_description = function.get("description", "")
             logger.debug(f"Function {i+1}: {function_name} - {function_description}")
             logger.debug(f"Function {i+1} parameters: {function.get('parameters', {})}")
+            
+            # Debug log for function name validation
+            import re
+            name_pattern = r'^[a-zA-Z0-9_-]+$'
+            if not re.match(name_pattern, function_name):
+                logger.error(f"Function {i+1} name '{function_name}' does not match required pattern {name_pattern}")
+                logger.error(f"Function {i+1} full function object: {function}")
+            else:
+                logger.debug(f"Function {i+1} name '{function_name}' matches required pattern")
 
             anthropic_tool = {
                 "name": function_name,
