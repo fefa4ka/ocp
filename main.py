@@ -283,86 +283,6 @@ async def embeddings(request: Request):
         return JSONResponse(content=error_response, status_code=500)
 
 
-@app.options("/v1/models")
-async def options_models():
-    """Handle OPTIONS request for CORS preflight and return model list."""
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        "Access-Control-Max-Age": "86400"
-    }
-
-    # Return the same model list as GET method
-    logger.info(f"OPTIONS /v1/models called. Current cache size: {len(model_cache)}")
-
-    if not model_cache:
-        # Attempt to fetch if cache is empty (e.g., initial fetch failed)
-        logger.warning("Model cache is empty, attempting to fetch again.")
-        try:
-            await fetch_and_cache_models()
-        except HTTPException as e:
-             logger.error(f"HTTPException during model fetch: {e.status_code} - {e.detail}")
-             return JSONResponse(status_code=e.status_code, content={"detail": e.detail}, headers=headers)
-        except Exception as e:
-             logger.error(f"Unexpected error during fetch attempt in options_models: {e}")
-             error_response = {
-                 "error": {
-                     "message": "Internal server error fetching models.",
-                     "type": "server_error",
-                     "param": None,
-                     "code": "internal_error"
-                 }
-             }
-             return JSONResponse(content=error_response, status_code=500, headers=headers)
-
-        # Check again if cache is populated after the attempt
-        if not model_cache:
-             logger.error("Model cache is still empty after fetch attempt")
-             error_response = {
-                 "error": {
-                     "message": "Model list is currently unavailable.",
-                     "type": "server_error",
-                     "param": None,
-                     "code": "service_unavailable"
-                 }
-             }
-             return JSONResponse(content=error_response, status_code=503, headers=headers)
-
-    openai_models = []
-    for model in model_cache:
-        # Skip image generation models in the /v1/models endpoint response
-        # but keep them in the cache for image generation requests
-        if model.model_family.lower() in ["dall-e-3", "recraft", "ideogram"]:
-            continue
-
-        # Include embedding models in the models list
-        # They will be shown in the models list but handled by the embeddings endpoint
-
-        # Determine 'owned_by' based on model_family or handle if desired
-        owned_by = model.model_family # Simple example: use family name
-        if "openai" in model.handle.lower():
-            owned_by = "openai"
-        elif "anthropic" in model.handle.lower():
-            owned_by = "anthropic"
-        elif "fireworks" in model.handle.lower():
-             owned_by = "fireworks"
-        elif "gemini" in model.handle.lower():
-             owned_by = "google"
-        # Add more specific rules as needed
-
-        openai_models.append(
-            OpenAIModel(
-                id=model.model_version,
-                object="model",
-                created=int(time.time()),
-                owned_by=owned_by,
-            )
-        )
-
-    model_list = OpenAIModelList(data=openai_models)
-    return JSONResponse(content=model_list.model_dump(), status_code=200, headers=headers)
-
 
 @app.get("/v1/models", response_model=OpenAIModelList)
 async def get_models():
@@ -1516,7 +1436,7 @@ def transform_anthropic_stream_chunk_to_openai(
     """
     Transforms a parsed Anthropic SSE event (type and data) into an OpenAI
     Chat Completion Chunk dictionary. Returns None if the event doesn't map.
-    
+
     tool_state: Dictionary to track tool call information across events
     """
     logger.debug(f"Transforming Anthropic event: {event_type}")
@@ -1549,7 +1469,7 @@ def transform_anthropic_stream_chunk_to_openai(
             # This event signals the start of a content block (text or tool use)
             content_block = event_data.get("content_block", {})
             block_index = event_data.get("index", 0)
-            
+
             if content_block.get("type") == "text":
                 # Start of text content block - no specific action needed for OpenAI format
                 # The actual text will come in content_block_delta events
@@ -1560,7 +1480,7 @@ def transform_anthropic_stream_chunk_to_openai(
                 tool_name = content_block.get("name", "")
                 tool_id = content_block.get("id", "")
                 tool_input = content_block.get("input", {})
-                
+
                 # Store tool info in state, keyed by block index
                 tool_state[block_index] = {
                     "id": tool_id,
@@ -1568,7 +1488,7 @@ def transform_anthropic_stream_chunk_to_openai(
                     "input": tool_input,
                     "accumulated_json": ""
                 }
-                
+
                 logger.debug(f"Started tool use block: {tool_name} (ID: {tool_id}) at index {block_index}")
                 return None
             else:
@@ -1579,7 +1499,7 @@ def transform_anthropic_stream_chunk_to_openai(
             # This event contains the actual text changes or tool use updates
             delta_info = event_data.get("delta", {})
             block_index = event_data.get("index", 0)
-            
+
             if delta_info.get("type") == "text_delta":
                 text_delta = delta_info.get("text", "")
                 if text_delta: # Only include content if there is text
@@ -1597,13 +1517,13 @@ def transform_anthropic_stream_chunk_to_openai(
         elif event_type == "content_block_stop":
             # This event signals the end of a content block (text or tool use)
             block_index = event_data.get("index", 0)
-            
+
             # Check if this is a tool use block we've been tracking
             if block_index in tool_state:
                 tool_info = tool_state[block_index]
                 tool_id = tool_info["id"]
                 tool_name = tool_info["name"]
-                
+
                 # Parse the accumulated JSON input
                 try:
                     if tool_info["accumulated_json"]:
@@ -1613,9 +1533,9 @@ def transform_anthropic_stream_chunk_to_openai(
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to parse accumulated tool JSON: {tool_info['accumulated_json']}, error: {e}")
                     tool_input = tool_info["input"]  # Fallback to initial input
-                
+
                 logger.debug(f"Processing tool use block stop: {tool_name} (ID: {tool_id}) with final input: {tool_input}")
-                
+
                 tool_call = {
                     "id": tool_id,
                     "type": "function",
@@ -1625,10 +1545,10 @@ def transform_anthropic_stream_chunk_to_openai(
                     }
                 }
                 openai_chunk["choices"][0]["delta"] = {"tool_calls": [tool_call]}
-                
+
                 # Clean up the tool state
                 del tool_state[block_index]
-                
+
                 logger.debug(f"Sending tool call chunk: {openai_chunk}")
                 return openai_chunk
             else:
@@ -1652,7 +1572,7 @@ def transform_anthropic_stream_chunk_to_openai(
                  finish_reason = finish_reason_map.get(stop_reason, stop_reason)
                  openai_chunk["choices"][0]["finish_reason"] = finish_reason
                  openai_chunk["choices"][0]["delta"] = {} # Delta is empty for the final chunk
-                 
+
                  logger.debug(f"Setting finish reason: {finish_reason} for stop_reason: {stop_reason}")
 
                  # Add usage info if available (OpenAI spec includes it in the *last* chunk)
