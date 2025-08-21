@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     MODEL_LIST_URL: str = "https://example.com/models"  # Example default
     MODEL_LIST_AUTH_TOKEN: Optional[str] = None # Optional OAuth token for fetching the model list
-    LOG_LEVEL: str = "INFO" # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL, NONE)
+    LOG_LEVEL: str = "DEBUG" # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL, NONE)
 
 
 settings = Settings()

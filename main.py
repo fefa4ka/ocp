@@ -212,9 +212,9 @@ async def embeddings(request: Request):
 
             # --- Transform response if needed ---
             final_response_data = response_data
-            # Check if this is an OpenAI response with a nested 'response' field
-            if "/openai/" in handle.lower() and "response" in response_data:
-                logger.info(f"Extracting nested response for OpenAI model '{model_id}'")
+            # Check if the actual response is nested inside a 'response' field
+            if "response" in response_data and isinstance(response_data.get("response"), dict) and "data" in response_data.get("response", {}):
+                logger.info(f"Extracting nested response for embedding model '{model_id}'")
                 final_response_data = response_data.get("response", {})
 
             return JSONResponse(content=final_response_data, status_code=backend_response.status_code)
@@ -993,9 +993,10 @@ async def chat_completions(request: Request):
 
                     # --- Transform response if needed ---
                     final_response_data = response_data
-                    # Check if this is an OpenAI response with a nested 'response' field
-                    if "/openai/" in handle.lower() and "response" in response_data:
-                        logger.info(f"Extracting nested response for OpenAI model '{model_id}'")
+                    # Check if the actual response is nested inside a 'response' field
+                    # This handles backends that wrap the OpenAI-compatible response
+                    if "response" in response_data and isinstance(response_data.get("response"), dict) and "choices" in response_data.get("response", {}):
+                        logger.info(f"Extracting nested response for model '{model_id}'")
                         final_response_data = response_data.get("response", {})
                     elif "/anthropic/" in handle.lower():
                         logger.info(f"Transforming Anthropic response for model '{model_id}' to OpenAI format.")

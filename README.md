@@ -250,7 +250,6 @@ Accepts standard OpenAI image generation requests. It looks up the requested `mo
 * `dall-e-3`: OpenAI's DALL-E 3 image generation models
 * `ideogram`: Ideogram AI image generation models
 * `recraft`: Recraft AI image generation models
-* `cohere`: Cohere's Command and Command-R models
 
 **Example Request:**
 
