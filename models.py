@@ -13,6 +13,9 @@ class SourceModel(BaseModel):
     handle: str = Field(..., description="API path handle for the generation endpoint.")
     prompt_price_1k: Optional[float] = Field(None, description="Price per 1k prompt tokens.")
     completion_price_1k: Optional[float] = Field(None, description="Price per 1k completion tokens.")
+    prices: Optional[Dict[str, Union[str, float]]] = Field(None, description="Pricing information for different metrics.")
+    discription: Optional[str] = Field(None, description="Description of the model.")
+    specific_versions: Optional[Any] = Field(None, description="Specific version information.")
 
 
 class SourceModelList(BaseModel):
@@ -100,3 +103,27 @@ class OpenAIImageGenerationResponse(BaseModel):
     """Represents the response body for OpenAI's /v1/images/generations."""
     created: int = Field(default_factory=lambda: int(time.time()), description="The timestamp for when the image was created.")
     data: List[OpenAIImageData] = Field(..., description="The list of generated images.")
+
+
+# --- OpenAI Text-to-Speech Definitions ---
+
+class OpenAITTSRequest(BaseModel):
+    """Represents the request body for OpenAI's /v1/audio/speech."""
+    model: str = Field(..., description="One of the available TTS models: tts-1 or tts-1-hd.")
+    input: str = Field(..., description="The text to generate audio for. The maximum length is 4096 characters.")
+    voice: str = Field(..., description="The voice to use when generating the audio. Supported voices are alloy, echo, fable, onyx, nova, and shimmer.")
+    response_format: Optional[Literal["mp3", "opus", "aac", "flac", "wav", "pcm"]] = Field("mp3", description="The format to audio in.")
+    speed: Optional[float] = Field(1.0, description="The speed of the generated audio. Select a value from 0.25 to 4.0. 1.0 is the default.")
+    user: Optional[str] = Field(None, description="A unique identifier for the end-user.")
+
+
+class OpenAITranscriptionRequest(BaseModel):
+    """Represents the request body for OpenAI's /v1/audio/transcriptions."""
+    file: str = Field(..., description="The audio file object (not file name) to transcribe, in one of these formats: flac, m4a, mp3, mp4, mpeg, mpga, oga, ogg, wav, or webm.")
+    model: str = Field(..., description="ID of the model to use. Only whisper-1 is currently available.")
+    language: Optional[str] = Field(None, description="The language of the input audio. Supplying the input language in ISO-639-1 format will improve accuracy and latency.")
+    prompt: Optional[str] = Field(None, description="An optional text to guide the model's style or continue a previous audio segment. The prompt should match the audio language.")
+    response_format: Optional[Literal["json", "text", "srt", "verbose_json", "vtt"]] = Field("json", description="The format of the transcript output, in one of these options: json, text, srt, verbose_json, or vtt.")
+    temperature: Optional[float] = Field(0.0, description="The sampling temperature, between 0 and 1. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.")
+    timestamp_granularities: Optional[List[Literal["word", "segment"]]] = Field(None, description="The timestamp granularities to populate for this transcription. response_format must be set verbose_json to use timestamp granularities.")
+    user: Optional[str] = Field(None, description="A unique identifier for the end-user.")

@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from config import settings
 from models import (
@@ -17,6 +17,8 @@ from models import (
     OpenAIImageGenerationResponse,
     OpenAIModel,
     OpenAIModelList,
+    OpenAITranscriptionRequest,
+    OpenAITTSRequest,
     SourceModel,
     SourceModelList,
 )
@@ -126,10 +128,51 @@ async def fetch_and_cache_models():
                 raise HTTPException(status_code=500, detail=f"Error processing model list: {e}")
 
 
+def add_audio_models():
+    """Add static TTS and audio model configurations to the cache."""
+    global model_cache, model_map
+
+    # TTS and audio model configurations
+    tts_models = [
+        SourceModel(
+            model_version="tts-1",
+            model_family="openai",
+            handle="/openai/v1/audio/speech",
+            prices={"characters": "0.000015"},
+            discription="Standard quality text-to-speech model",
+            specific_versions=None
+        ),
+        SourceModel(
+            model_version="tts-1-hd",
+            model_family="openai",
+            handle="/openai/v1/audio/speech",
+            prices={"characters": "0.000030"},
+            discription="High definition text-to-speech model",
+            specific_versions=None
+        ),
+        SourceModel(
+            model_version="whisper-1",
+            model_family="openai",
+            handle="/openai/v1/audio/transcriptions",
+            prices={"seconds": "0.0001"},
+            discription="",
+            specific_versions=None
+        )
+    ]
+
+    # Add TTS models to cache and map
+    for tts_model in tts_models:
+        model_cache.append(tts_model)
+        model_map[tts_model.model_version] = tts_model
+
+    logger.info(f"Added {len(tts_models)} audio models to cache")
+
+
 @app.on_event("startup")
 async def startup_event():
     """Fetch models on application startup."""
     await fetch_and_cache_models()
+    add_audio_models()
     # TODO: Add periodic refresh logic if needed
 
 
@@ -314,9 +357,13 @@ async def get_models():
 
     openai_models = []
     for model in model_cache:
-        # Skip image generation models in the /v1/models endpoint response
-        # but keep them in the cache for image generation requests
+        # Skip image generation, TTS, and transcription models in the /v1/models endpoint response
+        # but keep them in the cache for their respective endpoint requests
         if model.model_family.lower() in ["dall-e-3", "recraft", "ideogram"]:
+            continue
+
+        # Skip TTS and transcription models (they have specific endpoints)
+        if "/audio/" in model.handle:
             continue
 
         # Include embedding models in the models list
@@ -453,12 +500,48 @@ async def images_generations(request: Request):
         logger.info(f"Forwarding image generation request for model '{model_id}' to {target_url}")
 
         async with httpx.AsyncClient() as client:
-            backend_response = await client.post(
-                target_url,
-                json=payload_for_backend,
-                headers=headers_to_forward,
-                timeout=180.0  # Set a reasonable timeout for image generation
-            )
+            # Handle different request formats based on model family
+            if model_family == "ideogram":
+                # Ideogram uses multipart/form-data, not JSON
+                # Remove Content-Type header to let httpx set it automatically for multipart
+                form_headers = {k: v for k, v in headers_to_forward.items() if k.lower() != "content-type"}
+
+                # Convert payload to multipart form data
+                # Use files parameter to force multipart/form-data encoding
+                form_data = {}
+                image_request = payload_for_backend.get("image_request", {})
+
+                # Map the fields to form data
+                if "prompt" in image_request:
+                    form_data["prompt"] = (None, image_request["prompt"])
+                if "aspect_ratio" in image_request:
+                    form_data["aspect_ratio"] = (None, image_request["aspect_ratio"])
+                if "style" in image_request:
+                    form_data["style_type"] = (None, image_request["style"].upper())  # Ideogram uses style_type
+                if "n" in image_request:
+                    form_data["num_images"] = (None, str(image_request["n"]))
+                if "response_format" in image_request and image_request["response_format"] == "b64_json":
+                    form_data["response_format"] = (None, "b64_json")
+
+                # Add default rendering speed if not specified
+                form_data["rendering_speed"] = (None, "TURBO")
+
+                logger.debug(f"Ideogram form data: {form_data}")
+
+                backend_response = await client.post(
+                    target_url,
+                    files=form_data,
+                    headers=form_headers,
+                    timeout=180.0
+                )
+            else:
+                # Other APIs use JSON
+                backend_response = await client.post(
+                    target_url,
+                    json=payload_for_backend,
+                    headers=headers_to_forward,
+                    timeout=180.0  # Set a reasonable timeout for image generation
+                )
 
             # Raise exception for 4xx/5xx responses from the backend
             backend_response.raise_for_status()
@@ -570,6 +653,413 @@ async def images_generations(request: Request):
         return JSONResponse(content=error_response, status_code=e.status_code)
     except Exception as e:
         logger.exception(f"Unexpected error in images_generations endpoint: {e}")
+        error_response = {
+            "error": {
+                "message": "An unexpected error occurred",
+                "type": "server_error",
+                "param": None,
+                "code": "internal_error"
+            }
+        }
+        return JSONResponse(content=error_response, status_code=500)
+
+
+@app.post("/v1/audio/speech")
+async def audio_speech(request: Request):
+    """
+    Proxies text-to-speech requests to the backend defined by the model's handle,
+    using the same host as the MODEL_LIST_URL and the same OAuth token.
+    """
+    try:
+        # 1. Read the original request data
+        original_request_data = await request.json()
+        logger.debug(f"Received raw request data for TTS: {original_request_data}")
+
+        # 2. Validate request against our TTS model
+        try:
+            validated_request = OpenAITTSRequest.model_validate(original_request_data)
+            logger.debug(f"Validated TTS request: {validated_request}")
+        except Exception as e:
+            logger.warning(f"TTS request validation failed: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid request body: {e}")
+
+        # 3. Make a copy to modify for the backend request payload
+        payload_for_backend = original_request_data.copy()
+
+        # 4. Perform model lookup using the model from the payload
+        model_id = payload_for_backend.get("model")
+        if not model_id:
+            raise HTTPException(status_code=400, detail="Missing 'model' field in request body")
+
+        logger.info(f"Received TTS request for model: {model_id}")
+
+        # Find the model in the cached map
+        target_model = model_map.get(model_id)
+        if not target_model:
+            logger.warning(f"Model '{model_id}' not found in cache. Available: {list(model_map.keys())}")
+            raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found.")
+
+        handle = target_model.handle
+        model_family = target_model.model_family.lower()
+        logger.info(f"Found model '{model_id}' with handle: {handle}, family: {model_family}")
+
+        # Check if model family supports TTS
+        if model_family not in ["openai"]:
+            logger.error(f"Model family '{model_family}' is not supported for TTS")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{model_id}' with family '{model_family}' is not supported for TTS"
+            )
+
+        # 5. Extract host from MODEL_LIST_URL to use as the base for the backend request
+        parsed_url = urlparse(settings.MODEL_LIST_URL)
+        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        backend_url = f"{base_url}{handle}"
+        logger.info(f"Sending TTS request to backend URL: {backend_url}")
+
+        # 6. Prepare headers for backend request
+        headers = {"Content-Type": "application/json"}
+        if settings.MODEL_LIST_AUTH_TOKEN:
+            headers["Authorization"] = f"OAuth {settings.MODEL_LIST_AUTH_TOKEN}"
+
+        # 7. Make the request to the backend
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            logger.debug(f"Sending payload to backend: {payload_for_backend}")
+            backend_response = await client.post(
+                backend_url,
+                json=payload_for_backend,
+                headers=headers
+            )
+
+            logger.info(f"Backend response status: {backend_response.status_code}")
+            logger.debug(f"Backend response headers: {dict(backend_response.headers)}")
+
+            # For TTS, we expect binary audio content, so we'll stream it back
+            if backend_response.status_code == 200:
+                # Return the audio content with appropriate headers
+                content_type = backend_response.headers.get("content-type", "audio/mpeg")
+                return StreamingResponse(
+                    iter([backend_response.content]),
+                    media_type=content_type,
+                    headers={
+                        "Content-Disposition": f'attachment; filename="speech.{validated_request.response_format}"'
+                    }
+                )
+            else:
+                # Handle error responses
+                try:
+                    error_data = backend_response.json()
+                    logger.error(f"Backend error response: {error_data}")
+                except Exception:
+                    error_data = {"error": {"message": "Backend request failed", "type": "server_error"}}
+                    logger.error(f"Backend returned status {backend_response.status_code} with non-JSON response")
+
+                raise HTTPException(
+                    status_code=backend_response.status_code,
+                    detail=error_data.get("error", {}).get("message", "Backend request failed")
+                )
+
+    except HTTPException as e:
+        logger.error(f"HTTP exception in TTS endpoint: {e}")
+        error_response = {
+            "error": {
+                "message": str(e.detail),
+                "type": "server_error" if e.status_code >= 500 else "invalid_request_error",
+                "param": None,
+                "code": "service_unavailable" if e.status_code >= 500 else "bad_request"
+            }
+        }
+        return JSONResponse(content=error_response, status_code=e.status_code)
+    except Exception as e:
+        logger.exception(f"Unexpected error in TTS endpoint: {e}")
+        error_response = {
+            "error": {
+                "message": "An unexpected error occurred",
+                "type": "server_error",
+                "param": None,
+                "code": "internal_error"
+            }
+        }
+        return JSONResponse(content=error_response, status_code=500)
+
+
+@app.post("/v1/audio/transcriptions")
+async def audio_transcriptions(request: Request):
+    """
+    Proxies audio transcription requests to the backend defined by the model's handle,
+    using the same host as the MODEL_LIST_URL and the same OAuth token.
+    """
+    try:
+        # Note: For transcriptions, we need to handle multipart/form-data since it includes file uploads
+        # This is different from other endpoints that use JSON
+        form_data = await request.form()
+        logger.debug(f"Received form data for transcription: {dict(form_data)}")
+
+        # Extract model from form data
+        model_id = form_data.get("model")
+        if not model_id:
+            raise HTTPException(status_code=400, detail="Missing 'model' field in request")
+
+        logger.info(f"Received transcription request for model: {model_id}")
+
+        # Find the model in the cached map
+        target_model = model_map.get(model_id)
+        if not target_model:
+            logger.warning(f"Model '{model_id}' not found in cache. Available: {list(model_map.keys())}")
+            raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found.")
+
+        handle = target_model.handle
+        model_family = target_model.model_family.lower()
+        logger.info(f"Found model '{model_id}' with handle: {handle}, family: {model_family}")
+
+        # Check if model family supports transcriptions
+        if model_family not in ["openai"]:
+            logger.error(f"Model family '{model_family}' is not supported for transcriptions")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{model_id}' with family '{model_family}' is not supported for transcriptions"
+            )
+
+        # Extract host from MODEL_LIST_URL to use as the base for the backend request
+        parsed_url = urlparse(settings.MODEL_LIST_URL)
+        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        backend_url = f"{base_url}{handle}"
+        logger.info(f"Sending transcription request to backend URL: {backend_url}")
+
+        # Prepare headers for backend request
+        headers = {}
+        if settings.MODEL_LIST_AUTH_TOKEN:
+            headers["Authorization"] = f"OAuth {settings.MODEL_LIST_AUTH_TOKEN}"
+
+        # Forward the multipart form data to backend
+        files = {}
+        data = {}
+
+        for key, value in form_data.items():
+            if hasattr(value, 'read'):  # It's a file
+                file_content = await value.read()
+                files[key] = (value.filename, file_content, value.content_type)
+                logger.debug(f"Added file '{key}': filename={value.filename}, size={len(file_content)}, content_type={value.content_type}")
+            else:  # It's regular form data
+                data[key] = value
+                logger.debug(f"Added form field '{key}': {value}")
+
+        logger.debug(f"Files to send: {list(files.keys())}")
+        logger.debug(f"Form data to send: {data}")
+
+        # Make the request to the backend
+        async with httpx.AsyncClient(timeout=120.0) as client:  # Longer timeout for file uploads
+            backend_response = await client.post(
+                backend_url,
+                files=files,
+                data=data,
+                headers=headers
+            )
+
+            logger.info(f"Backend response status: {backend_response.status_code}")
+            logger.debug(f"Backend response headers: {dict(backend_response.headers)}")
+            logger.debug(f"Backend response content: {backend_response.text[:500]}")  # First 500 chars
+
+            if backend_response.status_code == 200:
+                # Backend wraps the response in a 'response' key, extract the actual OpenAI response
+                try:
+                    backend_data = backend_response.json()
+                    actual_response = backend_data.get("response", backend_data)
+                    return JSONResponse(content=actual_response)
+                except Exception as e:
+                    logger.error(f"Failed to parse backend response: {e}")
+                    return JSONResponse(content={"error": "Failed to parse backend response"}, status_code=500)
+            else:
+                # Handle error responses
+                try:
+                    error_data = backend_response['response'].json()
+                    logger.error(f"Backend error response: {error_data}")
+                except Exception:
+                    error_data = {"error": {"message": "Backend request failed", "type": "server_error"}}
+                    logger.error(f"Backend returned status {backend_response.status_code} with non-JSON response")
+
+                raise HTTPException(
+                    status_code=backend_response.status_code,
+                    detail=error_data.get("error", {}).get("message", "Backend request failed")
+                )
+
+    except HTTPException as e:
+        logger.error(f"HTTP exception in transcription endpoint: {e}")
+        error_response = {
+            "error": {
+                "message": str(e.detail),
+                "type": "server_error" if e.status_code >= 500 else "invalid_request_error",
+                "param": None,
+                "code": "service_unavailable" if e.status_code >= 500 else "bad_request"
+            }
+        }
+        return JSONResponse(content=error_response, status_code=e.status_code)
+    except Exception as e:
+        logger.exception(f"Unexpected error in transcription endpoint: {e}")
+        error_response = {
+            "error": {
+                "message": "An unexpected error occurred",
+                "type": "server_error",
+                "param": None,
+                "code": "internal_error"
+            }
+        }
+        return JSONResponse(content=error_response, status_code=500)
+
+
+@app.post("/v1/ideogram")
+async def ideogram_proxy(request: Request):
+    """
+    Direct proxy to Ideogram API - passes requests through without transformation.
+    """
+    try:
+        # Read the raw request data
+        raw_data = await request.body()
+        content_type = request.headers.get("content-type", "application/json")
+
+        logger.debug(f"Received raw Ideogram proxy request with content-type: {content_type}")
+        logger.debug(f"Raw request body size: {len(raw_data)} bytes")
+
+        # Log the raw data for debugging (truncated if too long)
+        if len(raw_data) < 1000:
+            logger.debug(f"Raw request body: {raw_data.decode('utf-8', errors='replace')}")
+        else:
+            logger.debug(f"Raw request body (first 500 chars): {raw_data[:500].decode('utf-8', errors='replace')}")
+
+        # Get the target URL from settings or use a default
+        ideogram_base_url = getattr(settings, 'IDEOGRAM_API_URL', None)
+        if not ideogram_base_url:
+            # Extract from MODEL_LIST_URL if available
+            try:
+                parsed_list_url = urlparse(settings.MODEL_LIST_URL)
+                ideogram_base_url = f"{parsed_list_url.scheme}://{parsed_list_url.netloc}"
+            except:
+                raise HTTPException(status_code=500, detail="Ideogram API URL not configured")
+
+        # Use the handle from model configuration
+        target_url = f"{ideogram_base_url}/ideogram/v1/ideogram-v3/generate"
+        logger.info(f"Proxying request to Ideogram API: {target_url}")
+
+        # Prepare headers for Ideogram API
+        headers_to_forward = {}
+
+        # Ideogram uses Api-Key header, not OAuth Authorization
+        if settings.MODEL_LIST_AUTH_TOKEN:
+            headers_to_forward["Authorization"] = f"OAuth {settings.MODEL_LIST_AUTH_TOKEN}"
+            logger.debug("Using configured MODEL_LIST_AUTH_TOKEN as Api-Key for Ideogram proxy.")
+        else:
+            logger.warning("No MODEL_LIST_AUTH_TOKEN configured. Request will be unauthenticated.")
+
+        logger.debug(f"Headers being sent to backend: {list(headers_to_forward.keys())}")
+
+        # Parse the JSON request and convert to form data for Ideogram API
+        try:
+            if content_type == "application/json":
+                request_data = json.loads(raw_data.decode('utf-8'))
+                logger.debug(f"Parsed JSON request data: {request_data}")
+
+                # Convert JSON to multipart form data
+                form_data = {}
+
+                # Map common fields
+                if "prompt" in request_data:
+                    form_data["prompt"] = (None, request_data["prompt"])
+                if "rendering_speed" in request_data:
+                    form_data["rendering_speed"] = (None, request_data["rendering_speed"])
+                if "aspect_ratio" in request_data:
+                    form_data["aspect_ratio"] = (None, request_data["aspect_ratio"])
+                if "style_type" in request_data:
+                    form_data["style_type"] = (None, request_data["style_type"])
+                if "num_images" in request_data:
+                    form_data["num_images"] = (None, str(request_data["num_images"]))
+                if "response_format" in request_data:
+                    form_data["response_format"] = (None, request_data["response_format"])
+
+                # Set default rendering speed if not provided
+                if "rendering_speed" not in form_data:
+                    form_data["rendering_speed"] = (None, "TURBO")
+
+                logger.debug(f"Converted to form data: {form_data}")
+
+                # Make request with form data
+                async with httpx.AsyncClient() as client:
+                    backend_response = await client.post(
+                        target_url,
+                        files=form_data,
+                        headers=headers_to_forward,
+                        timeout=180.0
+                    )
+            else:
+                # If not JSON, forward as-is (might be already form data)
+                async with httpx.AsyncClient() as client:
+                    backend_response = await client.post(
+                        target_url,
+                        content=raw_data,
+                        headers=headers_to_forward,
+                        timeout=180.0
+                    )
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON request: {e}")
+            # Try forwarding as-is
+            async with httpx.AsyncClient() as client:
+                backend_response = await client.post(
+                    target_url,
+                    content=raw_data,
+                    headers=headers_to_forward,
+                    timeout=180.0
+                )
+
+        logger.info(f"Backend response status: {backend_response.status_code}")
+        logger.debug(f"Backend response headers: {dict(backend_response.headers)}")
+
+        # Log the response body for debugging
+        response_text = backend_response.text
+        if len(response_text) < 1000:
+            logger.debug(f"Backend response body: {response_text}")
+        else:
+            logger.debug(f"Backend response body (first 500 chars): {response_text[:500]}")
+
+        # Parse the response and extract from nested 'response' field if present
+        try:
+            response_data = backend_response.json()
+            
+            # Check if the actual response is nested under 'response' field
+            if "response" in response_data and isinstance(response_data.get("response"), dict):
+                logger.info("Extracting nested response from Ideogram backend")
+                actual_response = response_data.get("response", {})
+                return JSONResponse(content=actual_response, status_code=backend_response.status_code)
+            else:
+                # Return the response as-is if not nested
+                return JSONResponse(content=response_data, status_code=backend_response.status_code)
+        except json.JSONDecodeError:
+            # If response is not JSON, return as-is
+            return Response(
+                content=backend_response.content,
+                status_code=backend_response.status_code,
+                headers=dict(backend_response.headers)
+            )
+
+    except httpx.RequestError as e:
+        logger.error(f"Error requesting Ideogram API: {e}")
+        error_response = {
+            "error": {
+                "message": f"Error contacting Ideogram API: {e}",
+                "type": "server_error",
+                "param": None,
+                "code": "service_unavailable"
+            }
+        }
+        return JSONResponse(content=error_response, status_code=503)
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Ideogram API returned error {e.response.status_code}: {e.response.text}")
+        logger.debug(f"Full error response headers: {dict(e.response.headers)}")
+        return Response(
+            content=e.response.content,
+            status_code=e.response.status_code,
+            headers=dict(e.response.headers)
+        )
+    except Exception as e:
+        logger.exception(f"Unexpected error in Ideogram proxy: {e}")
         error_response = {
             "error": {
                 "message": "An unexpected error occurred",
@@ -694,18 +1184,18 @@ async def chat_completions(request: Request):
 
         # --- Forward the request ---
         logger.info(f"Forwarding request for model '{model_id}' to {target_url}. Streaming: {is_streaming}")
-        
+
         # Debug log the final payload being sent to backend
         if "tools" in payload_for_backend or "functions" in payload_for_backend:
             tools_count = len(payload_for_backend.get("tools", [])) + len(payload_for_backend.get("functions", []))
             logger.debug(f"Sending {tools_count} tools/functions to backend for model '{model_id}'")
-            
+
             # Log each tool/function name being sent
             for i, tool in enumerate(payload_for_backend.get("tools", [])):
                 if tool.get("type") == "function":
                     tool_name = tool.get("function", {}).get("name", "")
                     logger.debug(f"Backend tool {i+1}: '{tool_name}'")
-            
+
             for i, function in enumerate(payload_for_backend.get("functions", [])):
                 function_name = function.get("name", "")
                 logger.debug(f"Backend function {i+1}: '{function_name}'")
@@ -1244,7 +1734,7 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
                 tool_description = function.get("description", "")
                 logger.debug(f"Tool {i+1}: {tool_name} - {tool_description}")
                 logger.debug(f"Tool {i+1} parameters: {function.get('parameters', {})}")
-                
+
                 # Debug log for tool name validation
                 import re
                 name_pattern = r'^[a-zA-Z0-9_-]+$'
@@ -1271,7 +1761,7 @@ def transform_openai_request_to_anthropic(openai_data: Dict[str, Any]) -> Dict[s
             function_description = function.get("description", "")
             logger.debug(f"Function {i+1}: {function_name} - {function_description}")
             logger.debug(f"Function {i+1} parameters: {function.get('parameters', {})}")
-            
+
             # Debug log for function name validation
             import re
             name_pattern = r'^[a-zA-Z0-9_-]+$'
@@ -2376,33 +2866,31 @@ def transform_openai_request_to_ideogram(openai_data: Dict[str, Any]) -> Dict[st
     """Transforms an OpenAI Image Generation request to an Ideogram API request."""
     logger.debug("Transforming OpenAI request to Ideogram format.")
 
-    # Create the inner request object
+    # Create the inner request object for form data preparation
     inner_request = {
         "prompt": openai_data.get("prompt", ""),
-        "aspect_ratio": "ASPECT_1_1",  # Default to square using correct format
-        "style": "natural",  # Default style
+        "aspect_ratio": "1x1",  # Default to square using correct format
+        "style": "GENERAL",  # Default style for Ideogram
     }
 
     # Map size to aspect_ratio using the correct format expected by Ideogram API
     size = openai_data.get("size", "1024x1024")
     if size == "1024x1024":
-        inner_request["aspect_ratio"] = "ASPECT_1_1"
+        inner_request["aspect_ratio"] = "1x1"
     elif size == "1792x1024":
-        inner_request["aspect_ratio"] = "ASPECT_16_9"
+        inner_request["aspect_ratio"] = "16x9"
     elif size == "1024x1792":
-        inner_request["aspect_ratio"] = "ASPECT_9_16"
+        inner_request["aspect_ratio"] = "9x16"
     elif size == "512x512":
-        inner_request["aspect_ratio"] = "ASPECT_1_1"
-        # Remove width and height as they might not be needed with aspect_ratio
-        # and could potentially conflict
+        inner_request["aspect_ratio"] = "1x1"
 
-    # Map style if provided
+    # Map style if provided - Ideogram uses different style values
     if "style" in openai_data:
         openai_style = openai_data["style"]
         if openai_style == "vivid":
-            inner_request["style"] = "enhance"
+            inner_request["style"] = "DESIGN"
         elif openai_style == "natural":
-            inner_request["style"] = "natural"
+            inner_request["style"] = "GENERAL"
 
     # Map number of images
     if "n" in openai_data:
@@ -2413,6 +2901,7 @@ def transform_openai_request_to_ideogram(openai_data: Dict[str, Any]) -> Dict[st
         inner_request["response_format"] = "b64_json"
 
     # Wrap the request in the required 'image_request' property
+    # This will be converted to form data in the main handler
     ideogram_request = {
         "image_request": inner_request
     }
